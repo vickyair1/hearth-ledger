@@ -16,7 +16,7 @@ November 2026 at a glance: **$6,850 income, $4,912 spent, $1,938 saved (28.3%)**
 - **Goals** — 6 savings goals (emergency fund $10,000, family holiday $3,200, new car $8,500, home deposit $25,000, kids' education $6,000, new fridge $1,400) with progress, monthly contributions, computed finish months, +$50 / +$100 and custom-amount contributions, plus an add-goal form.
 - **Bills** — a November 2026 calendar with due-date markers, a bill list (rent, utilities, internet, phone, insurance, car loan, subscriptions) with autopay badges and Paid toggles that update the paid total, and upcoming reminders.
 - **Reports** — Sep vs Oct vs Nov comparison table and bar chart, category trend over the 3 months, top 5 merchants by spend, auto-computed insights, a working Export CSV button (downloads a real CSV of the ledger) and Print.
-- **Household** — the four family members with roles and personal budgets, a shared-vs-personal spending split bar, and a per-member spending table (kids' school costs split between Leo and Sofia).
+- **Household** — the four family members with roles and personal budgets, a shared-vs-personal spending split bar, and a per-member spending table.
 
 Edits (transactions, budgets, goal contributions, bill toggles) are saved in the browser's localStorage; **Reset demo data** in the footer restores the original seed.
 
