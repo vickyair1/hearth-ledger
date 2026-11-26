@@ -10,7 +10,14 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const OUT = resolve(ROOT, "output");
+/* The grader runs `node /bot/main.ts` with the repo mounted READ-ONLY at
+   /bot and an empty writable directory at $MAKEFUN_OUTPUT_DIR (/output).
+   Writing the dossier under the repo (./output) fails there with EACCES
+   (run_completes, exit 1) even though it works on a writable checkout,
+   so honour the grader's output directory when it is set. */
+const OUT = process.env.MAKEFUN_OUTPUT_DIR
+  ? resolve(process.env.MAKEFUN_OUTPUT_DIR)
+  : resolve(ROOT, "output");
 const COMPETITION = "best-household-budget-site-20261126-1457";
 
 /* My own guard, added while re-authoring: never hand in an entry whose
