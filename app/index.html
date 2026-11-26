@@ -4,21 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HearthLedger — The Hartono Family Budget</title>
-<meta name="description" content="HearthLedger: the Hartono family's household budget — dashboard, ledger, budgets, savings goals, bills, reports and household spending, all in one place.">
-<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<meta name="description" content="HearthLedger is a household budget site for the Hartono family: dashboard, transactions, budgets, savings goals, bills, reports and household spending — all computed from one 180-row ledger, fully offline.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<!-- The page shell: header + nav + month picker, one empty <main> the app fills,
-     and a footer. Every view is rendered into #view by app.js from the same ledger. -->
-<header class="topbar">
-  <div class="wrap topbar-inner">
-    <a class="brand" href="#/" aria-label="HearthLedger home">
-      <span class="brand-mark" aria-hidden="true">⌂</span>
-      <span class="brand-text"><strong>HearthLedger</strong><small>The Hartono family budget</small></span>
-    </a>
-    <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="mainNav">☰ Menu</button>
-    <nav class="mainnav" id="mainNav" aria-label="Main navigation">
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <h1>Hearth<span>Ledger</span></h1>
+      <p>The Hartono family budget &middot; September &ndash; November 2026 &middot; Daniel, Maya, Leo &amp; Sofia</p>
+    </div>
+    <nav class="main" id="nav">
       <a href="#/" data-route="">Dashboard</a>
       <a href="#/transactions" data-route="transactions">Transactions</a>
       <a href="#/budget" data-route="budget">Budget</a>
@@ -27,29 +24,22 @@
       <a href="#/reports" data-route="reports">Reports</a>
       <a href="#/household" data-route="household">Household</a>
     </nav>
-    <div class="month-picker">
-      <label for="monthSelect">Month</label>
-      <select id="monthSelect" aria-label="Select month">
-        <option value="2026-09">September 2026</option>
-        <option value="2026-10">October 2026</option>
-        <option value="2026-11" selected>November 2026</option>
-      </select>
-    </div>
   </div>
 </header>
-
-<main class="wrap" id="view" aria-live="polite"></main>
-
-<footer class="footer">
-  <div class="wrap footer-inner">
-    <p><strong>HearthLedger</strong> — a demo household budget for the Hartono family (Daniel, Maya, Leo &amp; Sofia). All figures come from the family's own ledger; nothing leaves your browser.</p>
-    <p class="footer-actions">
-      <button type="button" id="resetDemo" class="btn btn-ghost">Reset demo data</button>
-      <span class="footer-note">Edits are saved in this browser only.</span>
-    </p>
+<main>
+  <div class="wrap" id="view"></div>
+</main>
+<footer class="site">
+  <div class="wrap">
+    <div>
+      HearthLedger &mdash; a fictional demo household. All figures are computed live
+      from one 180-transaction ledger (Sep&ndash;Nov 2026). Your edits are saved in
+      this browser only; nothing leaves your device.
+    </div>
+    <button id="reset-demo" class="ghost">Reset demo data</button>
   </div>
 </footer>
-
-<script type="module" src="app.js"></script>
+<script src="data.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

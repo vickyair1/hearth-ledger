@@ -1,292 +1,215 @@
-// HearthLedger seed data — the Hartono household (a fictional family, amounts in USD).
-// One compact row per transaction: [date, description, category, amount, type, member, merchant].
-// November 2026 is the default month: income $6,850, spending $4,912, saved $1,938 (28.3%).
-// Every total on every view is computed from TRANSACTIONS by computeMonth() in app.js —
-// no figure is written down twice, so the views can never disagree with the ledger.
+/* HearthLedger — seed data for the Hartono family budget (Sep–Nov 2026).
+   Every figure on the site is computed from TRANSACTIONS below, so the
+   dashboard, budget, reports and household pages can never disagree.
+   November is exact by construction: income $6,850.00, spent $4,912.00,
+   saved $1,938.00, savings rate 28.3%. September and October are built
+   from the same November template with a scale factor and a seeded
+   jitter, so the trend stays plausible without hand-typing 120 rows. */
 
-// Each category carries its chart colour with it; the two exports below are derived from
-// this one list so a category can never exist without a colour (or vice versa).
-const CATEGORY_STYLE = [
-  ['Housing', '#1d5c3f'], ['Groceries', '#2e8b57'], ['Utilities', '#d4a017'],
-  ['Transport', '#3f7fbf'], ['Dining Out', '#c65d21'], ['Kids & School', '#7a5fc0'],
-  ['Health', '#c0392b'], ['Entertainment', '#0e7490'], ['Subscriptions', '#64748b'],
-  ['Personal', '#b45309'], ['Household', '#4d7c0f'], ['Other', '#94a3b8']
+const MONTHS = ["2026-09", "2026-10", "2026-11"];
+
+const MONTH_LABELS = {
+  "2026-09": "September 2026",
+  "2026-10": "October 2026",
+  "2026-11": "November 2026",
+};
+
+const CATEGORIES = [
+  "Housing", "Groceries", "Transport", "Dining", "Utilities",
+  "Entertainment", "Shopping", "Health", "Education", "Kids",
+  "Subscriptions", "Misc",
 ];
 
-export const CATEGORIES = CATEGORY_STYLE.map(([name]) => name);
-export const CATEGORY_COLORS = Object.fromEntries(CATEGORY_STYLE);
+/* Monthly budget per category (November). Total $5,005. */
+const BUDGETS = {
+  Housing: 1700, Groceries: 850, Transport: 600, Dining: 240,
+  Utilities: 300, Entertainment: 110, Shopping: 350, Health: 200,
+  Education: 320, Kids: 140, Subscriptions: 35, Misc: 160,
+};
 
-export const MONTHS = ['2026-09', '2026-10', '2026-11'];
-const MONTH_NAMES = { '09': 'September', '10': 'October', '11': 'November' };
-export const MONTH_LABELS = Object.fromEntries(
-  MONTHS.map(m => [m, `${MONTH_NAMES[m.slice(5)]} ${m.slice(0, 4)}`])
+const MEMBERS = [
+  { name: "Daniel", role: "Dad", age: 38, personalBudget: 400, color: "#2f5d50" },
+  { name: "Maya", role: "Mum", age: 36, personalBudget: 350, color: "#c05621" },
+  { name: "Leo", role: "Son", age: 12, personalBudget: 120, color: "#2b6cb0" },
+  { name: "Sofia", role: "Daughter", age: 9, personalBudget: 100, color: "#975a16" },
+];
+
+const GOALS = [
+  { id: "g1", name: "Emergency fund", target: 10000, saved: 6200, monthly: 400, note: "6 months of expenses, kept in a separate account." },
+  { id: "g2", name: "Family holiday", target: 3200, saved: 1400, monthly: 200, note: "Bali in the June school holidays — flights, hotel, food." },
+  { id: "g3", name: "New car", target: 8500, saved: 2100, monthly: 300, note: "Deposit for a used Avanza to replace the 2012 one." },
+  { id: "g4", name: "Home deposit", target: 25000, saved: 4800, monthly: 500, note: "Long-term deposit for a bigger house near the kids' school." },
+  { id: "g5", name: "Kids' education", target: 6000, saved: 2750, monthly: 250, note: "Leo's high-school fund and Sofia's English course." },
+  { id: "g6", name: "New fridge", target: 1400, saved: 950, monthly: 150, note: "The old fridge hums all night — replace it before it dies." },
+];
+
+const BILLS = [
+  { id: "b1", name: "House rent", amount: 1548.50, due: 1, autopay: true, paid: true },
+  { id: "b2", name: "Fitness First gym", amount: 45.00, due: 3, autopay: true, paid: true },
+  { id: "b3", name: "PLN electricity", amount: 142.60, due: 5, autopay: true, paid: true },
+  { id: "b4", name: "IndiHome internet", amount: 79.00, due: 7, autopay: true, paid: true },
+  { id: "b5", name: "Netflix", amount: 15.99, due: 9, autopay: false, paid: true },
+  { id: "b6", name: "Phone — Telkomsel", amount: 68.00, due: 10, autopay: true, paid: false },
+  { id: "b7", name: "PDAM water", amount: 38.45, due: 12, autopay: false, paid: false },
+  { id: "b8", name: "Spotify Family", amount: 10.99, due: 14, autopay: false, paid: false },
+  { id: "b9", name: "Car loan instalment", amount: 320.00, due: 15, autopay: true, paid: false },
+  { id: "b10", name: "Home insurance", amount: 185.00, due: 18, autopay: true, paid: false },
+  { id: "b11", name: "Google One cloud", amount: 9.99, due: 20, autopay: false, paid: false },
+  { id: "b12", name: "Kompas digital", amount: 12.00, due: 25, autopay: false, paid: false },
+];
+
+/* November income — sums to exactly $6,850.00. */
+const NOV_INCOME = [
+  [1, "Salary — Daniel (PT Maju Bersama)", 5200.00, "Daniel"],
+  [12, "Freelance design — Daniel", 950.00, "Daniel"],
+  [20, "Part-time tutoring — Maya", 550.00, "Maya"],
+  [30, "Bank interest — BCA", 150.00, "Daniel"],
+];
+
+/* November expenses — 56 rows, sums to exactly $4,912.00.
+   Row shape: [day, merchant, category, amount, member]. */
+const NOV_EXPENSES = [
+  [1, "House rent — November", "Housing", 1548.50, "Shared"],
+  [18, "Home insurance premium", "Housing", 185.00, "Shared"],
+  [2, "Pasaraya Fresh Mart", "Groceries", 142.50, "Shared"],
+  [5, "Super Indo weekly shop", "Groceries", 96.20, "Shared"],
+  [9, "Pasaraya Fresh Mart", "Groceries", 118.75, "Shared"],
+  [12, "Super Indo weekly shop", "Groceries", 87.40, "Shared"],
+  [16, "Pasaraya Fresh Mart", "Groceries", 134.90, "Shared"],
+  [19, "Super Indo weekly shop", "Groceries", 76.55, "Shared"],
+  [23, "Pasaraya Fresh Mart", "Groceries", 109.30, "Shared"],
+  [27, "Super Indo weekly shop", "Groceries", 49.85, "Shared"],
+  [28, "Corner minimart snacks", "Groceries", 4.25, "Shared"],
+  [3, "Shell petrol", "Transport", 68.40, "Daniel"],
+  [10, "Shell petrol", "Transport", 54.25, "Daniel"],
+  [17, "Shell petrol", "Transport", 61.80, "Maya"],
+  [6, "Mall parking", "Transport", 12.00, "Maya"],
+  [21, "Street parking", "Transport", 9.50, "Daniel"],
+  [8, "Toll road top-up", "Transport", 22.30, "Daniel"],
+  [14, "Bus fare — Maya", "Transport", 18.75, "Maya"],
+  [24, "Car wash", "Transport", 15.00, "Daniel"],
+  [15, "Car loan instalment", "Transport", 320.00, "Shared"],
+  [4, "Warung Sate Pak Budi", "Dining", 48.60, "Daniel"],
+  [7, "Kopi Kenangan", "Dining", 32.75, "Maya"],
+  [11, "Pizza Hut family night", "Dining", 56.40, "Shared"],
+  [15, "Bakso Malang Cak Man", "Dining", 24.90, "Leo"],
+  [20, "Sushi Tei lunch", "Dining", 41.20, "Maya"],
+  [26, "Nasi Padang Sederhana", "Dining", 18.50, "Daniel"],
+  [29, "Kopi Kenangan", "Dining", 6.50, "Maya"],
+  [5, "PLN electricity", "Utilities", 142.60, "Shared"],
+  [12, "PDAM water", "Utilities", 38.45, "Shared"],
+  [19, "PGN gas", "Utilities", 27.80, "Shared"],
+  [7, "IndiHome internet", "Utilities", 79.00, "Shared"],
+  [8, "Cinema XXI — family movie", "Entertainment", 36.00, "Shared"],
+  [9, "Netflix subscription", "Entertainment", 15.99, "Shared"],
+  [13, "Steam game — Leo", "Entertainment", 24.99, "Leo"],
+  [22, "Gramedia bookstore", "Entertainment", 19.50, "Sofia"],
+  [6, "Uniqlo — Daniel shirts", "Shopping", 89.90, "Daniel"],
+  [10, "Skechers shoes — Maya", "Shopping", 64.00, "Maya"],
+  [18, "IKEA home bits", "Shopping", 47.25, "Shared"],
+  [25, "Tokopedia electronics", "Shopping", 129.99, "Daniel"],
+  [30, "Stationery — Sofia", "Shopping", 8.75, "Sofia"],
+  [9, "Apotek K-24 pharmacy", "Health", 28.40, "Maya"],
+  [16, "Dentist — Leo checkup", "Health", 120.00, "Leo"],
+  [3, "Fitness First gym", "Health", 45.00, "Daniel"],
+  [2, "School fees — Leo & Sofia", "Education", 210.00, "Shared"],
+  [11, "School books — Sofia", "Education", 38.60, "Sofia"],
+  [20, "English course — Maya", "Education", 59.00, "Maya"],
+  [7, "Toys Kingdom — Leo", "Kids", 32.50, "Leo"],
+  [14, "Kids clothes — Sofia", "Kids", 41.75, "Sofia"],
+  [21, "Swimming lessons — Leo", "Kids", 55.00, "Leo"],
+  [9, "Spotify Family", "Subscriptions", 10.99, "Shared"],
+  [14, "Google One cloud", "Subscriptions", 9.99, "Shared"],
+  [25, "Kompas digital", "Subscriptions", 12.00, "Shared"],
+  [13, "Birthday gift — Aunt Rina", "Misc", 45.00, "Maya"],
+  [17, "Plumber — leaking tap", "Misc", 78.50, "Shared"],
+  [23, "Charity — mosque donation", "Misc", 25.00, "Shared"],
+  [28, "Laundry service", "Misc", 12.00, "Shared"],
+];
+
+/* September / October income — plausible, slightly below November. */
+const SEP_INCOME = [
+  [1, "Salary — Daniel (PT Maju Bersama)", 5200.00, "Daniel"],
+  [11, "Freelance design — Daniel", 720.00, "Daniel"],
+  [19, "Part-time tutoring — Maya", 550.00, "Maya"],
+  [30, "Bank interest — BCA", 118.00, "Daniel"],
+];
+const OCT_INCOME = [
+  [1, "Salary — Daniel (PT Maju Bersama)", 5200.00, "Daniel"],
+  [13, "Freelance design — Daniel", 840.00, "Daniel"],
+  [21, "Part-time tutoring — Maya", 550.00, "Maya"],
+  [30, "Bank interest — BCA", 132.00, "Daniel"],
+];
+
+/* Deterministic PRNG so Sep/Oct rebuild identically on every load. */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function round2(n) { return Math.round(n * 100) / 100; }
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+/* Build one month of transactions from the November template. */
+function buildMonth(ym, scale, seed, incomeRows) {
+  const rand = mulberry32(seed);
+  const rows = [];
+  let n = 0;
+  incomeRows.forEach(function (r) {
+    n += 1;
+    rows.push({
+      id: "tx-" + ym + "-" + String(n).padStart(3, "0"),
+      date: ym + "-" + pad2(r[0]),
+      merchant: r[1], category: "Income", type: "income",
+      amount: r[2], member: r[3],
+    });
+  });
+  NOV_EXPENSES.forEach(function (r) {
+    n += 1;
+    const jitter = 0.94 + rand() * 0.12;
+    rows.push({
+      id: "tx-" + ym + "-" + String(n).padStart(3, "0"),
+      date: ym + "-" + pad2(Math.min(r[0], 28)),
+      merchant: r[1], category: r[2], type: "expense",
+      amount: round2(r[3] * scale * jitter), member: r[4],
+    });
+  });
+  return rows;
+}
+
+function buildNovember() {
+  const rows = [];
+  let n = 0;
+  NOV_INCOME.forEach(function (r) {
+    n += 1;
+    rows.push({
+      id: "tx-2026-11-" + String(n).padStart(3, "0"),
+      date: "2026-11-" + pad2(r[0]),
+      merchant: r[1], category: "Income", type: "income",
+      amount: r[2], member: r[3],
+    });
+  });
+  NOV_EXPENSES.forEach(function (r) {
+    n += 1;
+    rows.push({
+      id: "tx-2026-11-" + String(n).padStart(3, "0"),
+      date: "2026-11-" + pad2(r[0]),
+      merchant: r[1], category: r[2], type: "expense",
+      amount: r[3], member: r[4],
+    });
+  });
+  return rows;
+}
+
+/* The one ledger everything is computed from: 180 rows, 60 per month. */
+const TRANSACTIONS = [].concat(
+  buildMonth("2026-09", 0.94, 11, SEP_INCOME),
+  buildMonth("2026-10", 0.97, 29, OCT_INCOME),
+  buildNovember()
 );
-
-export const TRANSACTIONS = [
-// ---- NOVEMBER 2026 — income $6,850 ----
-['2026-11-01', 'Monthly salary — Daniel', 'Income', 5400.00, 'income', 'Daniel', 'Hartono Engineering'],
-['2026-11-14', 'Freelance design project — Maya', 'Income', 950.00, 'income', 'Maya', 'Bright Studio'],
-['2026-11-20', 'Tax refund & bank interest', 'Income', 500.00, 'income', 'Daniel', 'City Bank'],
-// ---- NOVEMBER 2026 — Housing $1,650 ----
-['2026-11-01', 'Monthly rent — 2-bed apartment', 'Housing', 1650.00, 'expense', 'Daniel', 'Maple Court Rentals'],
-// ---- NOVEMBER 2026 — Groceries $672.00 ----
-['2026-11-03', 'Weekly groceries — Whole Foods', 'Groceries', 142.30, 'expense', 'Maya', 'Whole Foods Market'],
-['2026-11-07', 'Weekly groceries — Trader Joe’s', 'Groceries', 118.75, 'expense', 'Maya', 'Trader Joe’s'],
-['2026-11-12', 'Weekly groceries — Costco run', 'Groceries', 96.40, 'expense', 'Daniel', 'Costco'],
-['2026-11-17', 'Weekly groceries — Fresh Mart', 'Groceries', 88.20, 'expense', 'Maya', 'Fresh Mart'],
-['2026-11-22', 'Weekly groceries — Whole Foods', 'Groceries', 104.15, 'expense', 'Daniel', 'Whole Foods Market'],
-['2026-11-27', 'Thanksgiving groceries', 'Groceries', 122.20, 'expense', 'Maya', 'Trader Joe’s'],
-// ---- NOVEMBER 2026 — Utilities $236.00 ----
-['2026-11-12', 'Electricity bill', 'Utilities', 96.40, 'expense', 'Daniel', 'City Power'],
-['2026-11-15', 'Water bill', 'Utilities', 48.20, 'expense', 'Daniel', 'City Water'],
-['2026-11-08', 'Home internet — 500 Mbps', 'Utilities', 59.99, 'expense', 'Maya', 'FiberNet'],
-['2026-11-18', 'Mobile phone — Maya', 'Utilities', 31.41, 'expense', 'Maya', 'Metro Mobile'],
-// ---- NOVEMBER 2026 — Transport $218.00 ----
-['2026-11-02', 'Fuel — Shell station', 'Transport', 52.00, 'expense', 'Daniel', 'Shell'],
-['2026-11-09', 'Fuel — BP station', 'Transport', 48.00, 'expense', 'Daniel', 'BP'],
-['2026-11-16', 'Fuel — Shell station', 'Transport', 46.00, 'expense', 'Daniel', 'Shell'],
-['2026-11-05', 'Bus passes — kids', 'Transport', 24.00, 'expense', 'Maya', 'City Transit'],
-['2026-11-11', 'Downtown parking', 'Transport', 18.00, 'expense', 'Daniel', 'ParkEasy'],
-['2026-11-21', 'Rideshare — airport run', 'Transport', 30.00, 'expense', 'Maya', 'RideGo'],
-// ---- NOVEMBER 2026 — Dining Out $308.00 ----
-['2026-11-04', 'Family dinner — Olive Garden', 'Dining Out', 42.50, 'expense', 'Daniel', 'Olive Garden'],
-['2026-11-06', 'Lunch with colleagues', 'Dining Out', 38.75, 'expense', 'Daniel', 'Bistro 9'],
-['2026-11-10', 'Pizza night — Domino’s', 'Dining Out', 64.20, 'expense', 'Maya', 'Domino’s'],
-['2026-11-13', 'Coffee & pastries', 'Dining Out', 28.40, 'expense', 'Maya', 'Blue Bottle'],
-['2026-11-19', 'Sushi dinner — family treat', 'Dining Out', 52.15, 'expense', 'Daniel', 'Sakura Sushi'],
-['2026-11-24', 'Takeaway Thai food', 'Dining Out', 36.80, 'expense', 'Maya', 'Thai Orchid'],
-['2026-11-28', 'Brunch — weekend café', 'Dining Out', 45.20, 'expense', 'Daniel', 'Sunrise Café'],
-// ---- NOVEMBER 2026 — Kids & School $412.00 ----
-['2026-11-02', 'School lunch — Leo & Sofia', 'Kids & School', 85.00, 'expense', 'Maya', 'Greenwood School'],
-['2026-11-05', 'Leo’s new school shoes', 'Kids & School', 68.50, 'expense', 'Maya', 'Kids Foot Locker'],
-['2026-11-09', 'Sofia’s story books', 'Kids & School', 42.30, 'expense', 'Maya', 'Book Barn'],
-['2026-11-14', 'Swimming lessons — both kids', 'Kids & School', 75.00, 'expense', 'Daniel', 'Aqua Swim Club'],
-['2026-11-18', 'School field trip — Leo', 'Kids & School', 96.20, 'expense', 'Maya', 'Greenwood School'],
-['2026-11-23', 'Board games & toys', 'Kids & School', 45.00, 'expense', 'Daniel', 'Toy World'],
-// ---- NOVEMBER 2026 — Health $188.00 ----
-['2026-11-03', 'Pharmacy — cold medicine', 'Health', 34.60, 'expense', 'Maya', 'CVS Pharmacy'],
-['2026-11-11', 'Dentist check-up — Sofia', 'Health', 89.00, 'expense', 'Maya', 'Bright Smile Dental'],
-['2026-11-06', 'Gym membership — Daniel', 'Health', 42.00, 'expense', 'Daniel', 'FitLife Gym'],
-['2026-11-16', 'Vitamins & supplements', 'Health', 22.40, 'expense', 'Maya', 'CVS Pharmacy'],
-// ---- NOVEMBER 2026 — Entertainment $164.00 ----
-['2026-11-07', 'Cinema — family movie night', 'Entertainment', 38.00, 'expense', 'Daniel', 'Cineplex'],
-['2026-11-15', 'Concert tickets — jazz night', 'Entertainment', 86.00, 'expense', 'Maya', 'City Hall Live'],
-['2026-11-26', 'Board game — Catan', 'Entertainment', 40.00, 'expense', 'Daniel', 'Game Stop'],
-// ---- NOVEMBER 2026 — Subscriptions $94.00 ----
-['2026-11-03', 'Netflix — standard plan', 'Subscriptions', 15.49, 'expense', 'Maya', 'Netflix'],
-['2026-11-10', 'Spotify Family', 'Subscriptions', 11.99, 'expense', 'Maya', 'Spotify'],
-['2026-11-13', 'Disney+ — kids', 'Subscriptions', 13.99, 'expense', 'Daniel', 'Disney+'],
-['2026-11-05', 'iCloud storage 200 GB', 'Subscriptions', 2.99, 'expense', 'Daniel', 'Apple'],
-['2026-11-17', 'YouTube Premium', 'Subscriptions', 13.99, 'expense', 'Maya', 'YouTube'],
-['2026-11-19', 'Audible — audiobooks', 'Subscriptions', 14.95, 'expense', 'Daniel', 'Audible'],
-['2026-11-21', 'News subscription — Daily Post', 'Subscriptions', 20.60, 'expense', 'Maya', 'Daily Post'],
-// ---- NOVEMBER 2026 — Personal $262.00 ----
-['2026-11-04', 'Haircut — Daniel', 'Personal', 45.00, 'expense', 'Daniel', 'Sharp Cuts'],
-['2026-11-12', 'Haircut & styling — Maya', 'Personal', 38.00, 'expense', 'Maya', 'Salon Belle'],
-['2026-11-16', 'Winter jacket — Maya', 'Personal', 96.50, 'expense', 'Maya', 'H&M'],
-['2026-11-20', 'Cosmetics & skincare', 'Personal', 42.50, 'expense', 'Maya', 'Sephora'],
-['2026-11-25', 'Books — Daniel', 'Personal', 40.00, 'expense', 'Daniel', 'Book Barn'],
-// ---- NOVEMBER 2026 — Household $238.00 ----
-['2026-11-06', 'Cleaning supplies', 'Household', 64.20, 'expense', 'Maya', 'Target'],
-['2026-11-10', 'Hardware — shelves & hooks', 'Household', 58.40, 'expense', 'Daniel', 'Home Depot'],
-['2026-11-14', 'Laundry service', 'Household', 32.90, 'expense', 'Maya', 'Fresh Laundry'],
-['2026-11-22', 'New curtains — living room', 'Household', 82.50, 'expense', 'Maya', 'IKEA'],
-// ---- NOVEMBER 2026 — Other $470.00 ----
-['2026-11-08', 'Car repair — brake pads', 'Other', 320.00, 'expense', 'Daniel', 'AutoCare Garage'],
-['2026-11-17', 'Birthday gift — Grandma', 'Other', 86.00, 'expense', 'Maya', 'Gift Gallery'],
-['2026-11-25', 'Bank fees', 'Other', 14.00, 'expense', 'Daniel', 'City Bank'],
-['2026-11-28', 'Miscellaneous — stationery', 'Other', 50.00, 'expense', 'Maya', 'Office Depot'],
-// ---- OCTOBER 2026 — income $6,700 ----
-['2026-10-01', 'Monthly salary — Daniel', 'Income', 5400.00, 'income', 'Daniel', 'Hartono Engineering'],
-['2026-10-15', 'Freelance design project — Maya', 'Income', 850.00, 'income', 'Maya', 'Bright Studio'],
-['2026-10-22', 'Sold old bicycle', 'Income', 450.00, 'income', 'Daniel', 'Facebook Marketplace'],
-// ---- OCTOBER 2026 — Housing $1,650 ----
-['2026-10-01', 'Monthly rent — 2-bed apartment', 'Housing', 1650.00, 'expense', 'Daniel', 'Maple Court Rentals'],
-// ---- OCTOBER 2026 — Groceries $640.00 ----
-['2026-10-03', 'Weekly groceries — Whole Foods', 'Groceries', 138.20, 'expense', 'Maya', 'Whole Foods Market'],
-['2026-10-08', 'Weekly groceries — Trader Joe’s', 'Groceries', 121.45, 'expense', 'Maya', 'Trader Joe’s'],
-['2026-10-13', 'Weekly groceries — Costco run', 'Groceries', 98.60, 'expense', 'Daniel', 'Costco'],
-['2026-10-18', 'Weekly groceries — Fresh Mart', 'Groceries', 92.15, 'expense', 'Maya', 'Fresh Mart'],
-['2026-10-23', 'Weekly groceries — Whole Foods', 'Groceries', 104.80, 'expense', 'Daniel', 'Whole Foods Market'],
-['2026-10-29', 'Halloween groceries & snacks', 'Groceries', 84.80, 'expense', 'Maya', 'Trader Joe’s'],
-// ---- OCTOBER 2026 — Utilities $228.00 ----
-['2026-10-12', 'Electricity bill', 'Utilities', 92.30, 'expense', 'Daniel', 'City Power'],
-['2026-10-15', 'Water bill', 'Utilities', 46.80, 'expense', 'Daniel', 'City Water'],
-['2026-10-08', 'Home internet — 500 Mbps', 'Utilities', 59.99, 'expense', 'Maya', 'FiberNet'],
-['2026-10-18', 'Mobile phone — Maya', 'Utilities', 28.91, 'expense', 'Maya', 'Metro Mobile'],
-// ---- OCTOBER 2026 — Transport $205.00 ----
-['2026-10-02', 'Fuel — Shell station', 'Transport', 48.00, 'expense', 'Daniel', 'Shell'],
-['2026-10-10', 'Fuel — BP station', 'Transport', 52.00, 'expense', 'Daniel', 'BP'],
-['2026-10-19', 'Fuel — Shell station', 'Transport', 44.00, 'expense', 'Daniel', 'Shell'],
-['2026-10-06', 'Bus passes — kids', 'Transport', 21.00, 'expense', 'Maya', 'City Transit'],
-['2026-10-14', 'Downtown parking', 'Transport', 16.00, 'expense', 'Daniel', 'ParkEasy'],
-['2026-10-26', 'Rideshare — evening out', 'Transport', 24.00, 'expense', 'Maya', 'RideGo'],
-// ---- OCTOBER 2026 — Dining Out $286.00 ----
-['2026-10-04', 'Family dinner — Olive Garden', 'Dining Out', 40.50, 'expense', 'Daniel', 'Olive Garden'],
-['2026-10-07', 'Lunch with colleagues', 'Dining Out', 36.25, 'expense', 'Daniel', 'Bistro 9'],
-['2026-10-11', 'Pizza night — Domino’s', 'Dining Out', 58.40, 'expense', 'Maya', 'Domino’s'],
-['2026-10-15', 'Coffee & pastries', 'Dining Out', 26.80, 'expense', 'Maya', 'Blue Bottle'],
-['2026-10-20', 'Sushi dinner — family treat', 'Dining Out', 48.90, 'expense', 'Daniel', 'Sakura Sushi'],
-['2026-10-25', 'Takeaway Thai food', 'Dining Out', 34.15, 'expense', 'Maya', 'Thai Orchid'],
-['2026-10-30', 'Halloween brunch — café', 'Dining Out', 41.00, 'expense', 'Daniel', 'Sunrise Café'],
-// ---- OCTOBER 2026 — Kids & School $385.00 ----
-['2026-10-02', 'School lunch — Leo & Sofia', 'Kids & School', 85.00, 'expense', 'Maya', 'Greenwood School'],
-['2026-10-06', 'Leo’s new trainers', 'Kids & School', 62.40, 'expense', 'Maya', 'Kids Foot Locker'],
-['2026-10-10', 'Sofia’s art supplies', 'Kids & School', 38.75, 'expense', 'Maya', 'Book Barn'],
-['2026-10-14', 'Swimming lessons — both kids', 'Kids & School', 72.00, 'expense', 'Daniel', 'Aqua Swim Club'],
-['2026-10-21', 'School book fair — Leo', 'Kids & School', 84.85, 'expense', 'Maya', 'Greenwood School'],
-['2026-10-27', 'Halloween costumes', 'Kids & School', 42.00, 'expense', 'Daniel', 'Toy World'],
-// ---- OCTOBER 2026 — Health $172.00 ----
-['2026-10-03', 'Pharmacy — vitamins', 'Health', 28.40, 'expense', 'Maya', 'CVS Pharmacy'],
-['2026-10-12', 'Dentist check-up — Leo', 'Health', 79.00, 'expense', 'Maya', 'Bright Smile Dental'],
-['2026-10-06', 'Gym membership — Daniel', 'Health', 42.00, 'expense', 'Daniel', 'FitLife Gym'],
-['2026-10-17', 'Vitamins & supplements', 'Health', 22.60, 'expense', 'Maya', 'CVS Pharmacy'],
-// ---- OCTOBER 2026 — Entertainment $148.00 ----
-['2026-10-09', 'Cinema — family movie night', 'Entertainment', 32.00, 'expense', 'Daniel', 'Cineplex'],
-['2026-10-16', 'Theatre tickets — musical', 'Entertainment', 76.00, 'expense', 'Maya', 'City Hall Live'],
-['2026-10-24', 'Board game — Ticket to Ride', 'Entertainment', 40.00, 'expense', 'Daniel', 'Game Stop'],
-// ---- OCTOBER 2026 — Subscriptions $94.00 ----
-['2026-10-03', 'Netflix — standard plan', 'Subscriptions', 15.49, 'expense', 'Maya', 'Netflix'],
-['2026-10-10', 'Spotify Family', 'Subscriptions', 11.99, 'expense', 'Maya', 'Spotify'],
-['2026-10-13', 'Disney+ — kids', 'Subscriptions', 13.99, 'expense', 'Daniel', 'Disney+'],
-['2026-10-05', 'iCloud storage 200 GB', 'Subscriptions', 2.99, 'expense', 'Daniel', 'Apple'],
-['2026-10-17', 'YouTube Premium', 'Subscriptions', 13.99, 'expense', 'Maya', 'YouTube'],
-['2026-10-19', 'Audible — audiobooks', 'Subscriptions', 14.95, 'expense', 'Daniel', 'Audible'],
-['2026-10-21', 'News subscription — Daily Post', 'Subscriptions', 20.60, 'expense', 'Maya', 'Daily Post'],
-// ---- OCTOBER 2026 — Personal $241.00 ----
-['2026-10-05', 'Haircut — Daniel', 'Personal', 42.00, 'expense', 'Daniel', 'Sharp Cuts'],
-['2026-10-13', 'Haircut & styling — Maya', 'Personal', 36.00, 'expense', 'Maya', 'Salon Belle'],
-['2026-10-17', 'Autumn coat — Daniel', 'Personal', 88.50, 'expense', 'Daniel', 'H&M'],
-['2026-10-22', 'Cosmetics & skincare', 'Personal', 38.50, 'expense', 'Maya', 'Sephora'],
-['2026-10-28', 'Books — Maya', 'Personal', 36.00, 'expense', 'Maya', 'Book Barn'],
-// ---- OCTOBER 2026 — Household $212.00 ----
-['2026-10-07', 'Cleaning supplies', 'Household', 58.30, 'expense', 'Maya', 'Target'],
-['2026-10-11', 'Hardware — garden tools', 'Household', 52.40, 'expense', 'Daniel', 'Home Depot'],
-['2026-10-15', 'Laundry service', 'Household', 29.80, 'expense', 'Maya', 'Fresh Laundry'],
-['2026-10-24', 'Bedding set — kids room', 'Household', 71.50, 'expense', 'Maya', 'IKEA'],
-// ---- OCTOBER 2026 — Other $419.00 ----
-['2026-10-09', 'Car service — oil change', 'Other', 285.00, 'expense', 'Daniel', 'AutoCare Garage'],
-['2026-10-18', 'Birthday gift — Uncle Ray', 'Other', 78.00, 'expense', 'Maya', 'Gift Gallery'],
-['2026-10-25', 'Bank fees', 'Other', 12.00, 'expense', 'Daniel', 'City Bank'],
-['2026-10-29', 'Miscellaneous — stationery', 'Other', 44.00, 'expense', 'Maya', 'Office Depot'],
-// ---- SEPTEMBER 2026 — income $6,400 ----
-['2026-09-01', 'Monthly salary — Daniel', 'Income', 5400.00, 'income', 'Daniel', 'Hartono Engineering'],
-['2026-09-16', 'Freelance design project — Maya', 'Income', 700.00, 'income', 'Maya', 'Bright Studio'],
-['2026-09-24', 'Sold old tablet', 'Income', 300.00, 'income', 'Daniel', 'Facebook Marketplace'],
-// ---- SEPTEMBER 2026 — Housing $1,650 ----
-['2026-09-01', 'Monthly rent — 2-bed apartment', 'Housing', 1650.00, 'expense', 'Daniel', 'Maple Court Rentals'],
-// ---- SEPTEMBER 2026 — Groceries $612.00 ----
-['2026-09-03', 'Weekly groceries — Whole Foods', 'Groceries', 132.40, 'expense', 'Maya', 'Whole Foods Market'],
-['2026-09-08', 'Weekly groceries — Trader Joe’s', 'Groceries', 118.60, 'expense', 'Maya', 'Trader Joe’s'],
-['2026-09-13', 'Weekly groceries — Costco run', 'Groceries', 94.30, 'expense', 'Daniel', 'Costco'],
-['2026-09-18', 'Weekly groceries — Fresh Mart', 'Groceries', 88.90, 'expense', 'Maya', 'Fresh Mart'],
-['2026-09-23', 'Weekly groceries — Whole Foods', 'Groceries', 102.10, 'expense', 'Daniel', 'Whole Foods Market'],
-['2026-09-28', 'Back-to-school snacks', 'Groceries', 75.70, 'expense', 'Maya', 'Trader Joe’s'],
-// ---- SEPTEMBER 2026 — Utilities $221.00 ----
-['2026-09-12', 'Electricity bill', 'Utilities', 88.60, 'expense', 'Daniel', 'City Power'],
-['2026-09-15', 'Water bill', 'Utilities', 45.20, 'expense', 'Daniel', 'City Water'],
-['2026-09-08', 'Home internet — 500 Mbps', 'Utilities', 59.99, 'expense', 'Maya', 'FiberNet'],
-['2026-09-18', 'Mobile phone — Maya', 'Utilities', 27.21, 'expense', 'Maya', 'Metro Mobile'],
-// ---- SEPTEMBER 2026 — Transport $196.00 ----
-['2026-09-02', 'Fuel — Shell station', 'Transport', 46.00, 'expense', 'Daniel', 'Shell'],
-['2026-09-10', 'Fuel — BP station', 'Transport', 50.00, 'expense', 'Daniel', 'BP'],
-['2026-09-19', 'Fuel — Shell station', 'Transport', 42.00, 'expense', 'Daniel', 'Shell'],
-['2026-09-06', 'Bus passes — kids', 'Transport', 20.00, 'expense', 'Maya', 'City Transit'],
-['2026-09-14', 'Downtown parking', 'Transport', 14.00, 'expense', 'Daniel', 'ParkEasy'],
-['2026-09-26', 'Rideshare — evening out', 'Transport', 24.00, 'expense', 'Maya', 'RideGo'],
-// ---- SEPTEMBER 2026 — Dining Out $264.00 ----
-['2026-09-04', 'Family dinner — Olive Garden', 'Dining Out', 38.40, 'expense', 'Daniel', 'Olive Garden'],
-['2026-09-07', 'Lunch with colleagues', 'Dining Out', 34.60, 'expense', 'Daniel', 'Bistro 9'],
-['2026-09-11', 'Pizza night — Domino’s', 'Dining Out', 55.20, 'expense', 'Maya', 'Domino’s'],
-['2026-09-15', 'Coffee & pastries', 'Dining Out', 24.80, 'expense', 'Maya', 'Blue Bottle'],
-['2026-09-20', 'Sushi dinner — family treat', 'Dining Out', 46.50, 'expense', 'Daniel', 'Sakura Sushi'],
-['2026-09-25', 'Takeaway Thai food', 'Dining Out', 32.40, 'expense', 'Maya', 'Thai Orchid'],
-['2026-09-30', 'Brunch — weekend café', 'Dining Out', 32.10, 'expense', 'Daniel', 'Sunrise Café'],
-// ---- SEPTEMBER 2026 — Kids & School $368.00 ----
-['2026-09-02', 'School lunch — Leo & Sofia', 'Kids & School', 85.00, 'expense', 'Maya', 'Greenwood School'],
-['2026-09-06', 'Leo’s school bag', 'Kids & School', 58.20, 'expense', 'Maya', 'Kids Foot Locker'],
-['2026-09-10', 'Sofia’s crayons & paper', 'Kids & School', 36.40, 'expense', 'Maya', 'Book Barn'],
-['2026-09-14', 'Swimming lessons — both kids', 'Kids & School', 70.00, 'expense', 'Daniel', 'Aqua Swim Club'],
-['2026-09-21', 'School supplies — new term', 'Kids & School', 76.40, 'expense', 'Maya', 'Greenwood School'],
-['2026-09-27', 'Board games & toys', 'Kids & School', 42.00, 'expense', 'Daniel', 'Toy World'],
-// ---- SEPTEMBER 2026 — Health $158.00 ----
-['2026-09-03', 'Pharmacy — allergy relief', 'Health', 26.80, 'expense', 'Maya', 'CVS Pharmacy'],
-['2026-09-12', 'Dentist check-up — Daniel', 'Health', 68.00, 'expense', 'Daniel', 'Bright Smile Dental'],
-['2026-09-06', 'Gym membership — Daniel', 'Health', 42.00, 'expense', 'Daniel', 'FitLife Gym'],
-['2026-09-17', 'Vitamins & supplements', 'Health', 21.20, 'expense', 'Maya', 'CVS Pharmacy'],
-// ---- SEPTEMBER 2026 — Entertainment $132.00 ----
-['2026-09-09', 'Cinema — family movie night', 'Entertainment', 30.00, 'expense', 'Daniel', 'Cineplex'],
-['2026-09-16', 'Zoo tickets — family day', 'Entertainment', 62.00, 'expense', 'Maya', 'City Zoo'],
-['2026-09-24', 'Board game — Uno & puzzles', 'Entertainment', 40.00, 'expense', 'Daniel', 'Game Stop'],
-// ---- SEPTEMBER 2026 — Subscriptions $94.00 ----
-['2026-09-03', 'Netflix — standard plan', 'Subscriptions', 15.49, 'expense', 'Maya', 'Netflix'],
-['2026-09-10', 'Spotify Family', 'Subscriptions', 11.99, 'expense', 'Maya', 'Spotify'],
-['2026-09-13', 'Disney+ — kids', 'Subscriptions', 13.99, 'expense', 'Daniel', 'Disney+'],
-['2026-09-05', 'iCloud storage 200 GB', 'Subscriptions', 2.99, 'expense', 'Daniel', 'Apple'],
-['2026-09-17', 'YouTube Premium', 'Subscriptions', 13.99, 'expense', 'Maya', 'YouTube'],
-['2026-09-19', 'Audible — audiobooks', 'Subscriptions', 14.95, 'expense', 'Daniel', 'Audible'],
-['2026-09-21', 'News subscription — Daily Post', 'Subscriptions', 20.60, 'expense', 'Maya', 'Daily Post'],
-// ---- SEPTEMBER 2026 — Personal $228.00 ----
-['2026-09-05', 'Haircut — Daniel', 'Personal', 40.00, 'expense', 'Daniel', 'Sharp Cuts'],
-['2026-09-13', 'Haircut & styling — Maya', 'Personal', 34.00, 'expense', 'Maya', 'Salon Belle'],
-['2026-09-17', 'School shoes — Sofia', 'Personal', 82.40, 'expense', 'Maya', 'H&M'],
-['2026-09-22', 'Cosmetics & skincare', 'Personal', 36.60, 'expense', 'Maya', 'Sephora'],
-['2026-09-28', 'Books — Daniel', 'Personal', 35.00, 'expense', 'Daniel', 'Book Barn'],
-// ---- SEPTEMBER 2026 — Household $198.00 ----
-['2026-09-07', 'Cleaning supplies', 'Household', 54.60, 'expense', 'Maya', 'Target'],
-['2026-09-11', 'Hardware — light bulbs', 'Household', 48.20, 'expense', 'Daniel', 'Home Depot'],
-['2026-09-15', 'Laundry service', 'Household', 28.40, 'expense', 'Maya', 'Fresh Laundry'],
-['2026-09-24', 'Kitchen towels & mats', 'Household', 66.80, 'expense', 'Maya', 'IKEA'],
-// ---- SEPTEMBER 2026 — Other $396.00 ----
-['2026-09-09', 'Car tyres — two new', 'Other', 262.00, 'expense', 'Daniel', 'AutoCare Garage'],
-['2026-09-18', 'Birthday gift — Aunt Lily', 'Other', 74.00, 'expense', 'Maya', 'Gift Gallery'],
-['2026-09-25', 'Bank fees', 'Other', 12.00, 'expense', 'Daniel', 'City Bank'],
-['2026-09-29', 'Miscellaneous — stationery', 'Other', 48.00, 'expense', 'Maya', 'Office Depot'],
-];
-
-// Monthly category budgets (November is the month the app opens on; every month's
-// budget is editable in the app, and edits are kept in localStorage, not here).
-// Written as one row per month so a new month is a single added line.
-const BUDGET_ROWS = [
-  ['2026-09', { 'Housing': 1650, 'Groceries': 620, 'Utilities': 230, 'Transport': 200, 'Dining Out': 280, 'Kids & School': 380, 'Health': 180, 'Entertainment': 140, 'Subscriptions': 100, 'Personal': 240, 'Household': 210, 'Other': 350 }],
-  ['2026-10', { 'Housing': 1650, 'Groceries': 640, 'Utilities': 235, 'Transport': 210, 'Dining Out': 290, 'Kids & School': 390, 'Health': 190, 'Entertainment': 150, 'Subscriptions': 100, 'Personal': 250, 'Household': 220, 'Other': 380 }],
-  ['2026-11', { 'Housing': 1650, 'Groceries': 650, 'Utilities': 240, 'Transport': 220, 'Dining Out': 300, 'Kids & School': 400, 'Health': 200, 'Entertainment': 150, 'Subscriptions': 100, 'Personal': 250, 'Household': 230, 'Other': 400 }]
-];
-export const BUDGETS = Object.fromEntries(BUDGET_ROWS);
-
-// Savings goals. `saved` moves when the family contributes in the app; `monthly` is the
-// planned contribution, used to work out the finish month shown on each goal card.
-export const GOALS = [
-  { name: 'Emergency fund', target: 10000, saved: 6200, monthly: 400, icon: '🛟', note: 'Six months of essentials, kept in a high-yield savings account.' },
-  { name: 'Family holiday', target: 3200, saved: 1850, monthly: 250, icon: '🏖️', note: 'A week at the coast next summer — flights, stay and meals.' },
-  { name: 'New car', target: 8500, saved: 2300, monthly: 300, icon: '🚗', note: 'Replace the 2012 sedan before the next big repair bill.' },
-  { name: 'Home deposit', target: 25000, saved: 9400, monthly: 500, icon: '🏠', note: 'Saving towards a 10% deposit on a three-bedroom house.' },
-  { name: 'Kids’ education', target: 6000, saved: 2100, monthly: 200, icon: '🎓', note: 'Leo and Sofia’s school fees and activity fund.' },
-  { name: 'New fridge', target: 1400, saved: 950, monthly: 150, icon: '🧊', note: 'Energy-efficient fridge to replace the noisy 15-year-old one.' }
-];
-
-// Recurring bills for November 2026. `day` is the due day of the month; `paid` is the
-// state the demo opens with — five bills already settled, seven still to pay.
-export const BILLS = [
-  { name: 'Rent — Maple Court', amount: 1650.00, day: 1, autopay: true, paid: true, category: 'Housing' },
-  { name: 'Car loan', amount: 310.00, day: 5, autopay: true, paid: true, category: 'Transport' },
-  { name: 'Gym — FitLife', amount: 42.00, day: 7, autopay: true, paid: true, category: 'Health' },
-  { name: 'Home internet — FiberNet', amount: 59.99, day: 8, autopay: true, paid: true, category: 'Utilities' },
-  { name: 'Spotify Family', amount: 11.99, day: 10, autopay: true, paid: true, category: 'Subscriptions' },
-  { name: 'Electricity — City Power', amount: 96.40, day: 12, autopay: false, paid: false, category: 'Utilities' },
-  { name: 'Netflix', amount: 15.49, day: 13, autopay: true, paid: false, category: 'Subscriptions' },
-  { name: 'Water — City Water', amount: 48.20, day: 15, autopay: false, paid: false, category: 'Utilities' },
-  { name: 'Mobile — Metro Mobile', amount: 31.41, day: 18, autopay: true, paid: false, category: 'Subscriptions' },
-  { name: 'Car insurance', amount: 128.00, day: 20, autopay: false, paid: false, category: 'Transport' },
-  { name: 'Disney+', amount: 13.99, day: 23, autopay: true, paid: false, category: 'Subscriptions' },
-  { name: 'YouTube Premium', amount: 13.99, day: 27, autopay: true, paid: false, category: 'Subscriptions' }
-];
-
-// Household members. `personal` is each person's own monthly budget; `color` is their
-// avatar colour on the Household page. Kids & School spending is split between Leo and Sofia.
-export const MEMBERS = [
-  { name: 'Daniel Hartono', role: 'Dad · Software engineer', age: 38, personal: 150, color: '#1d5c3f', note: 'Brings home the salary and handles rent, transport and the car.' },
-  { name: 'Maya Hartono', role: 'Mum · Freelance designer', age: 36, personal: 150, color: '#b45309', note: 'Freelance income, groceries, kids’ activities and the household shop.' },
-  { name: 'Leo Hartono', role: 'Son · 4th grade', age: 9, personal: 40, color: '#3f7fbf', note: 'School lunches, swimming lessons and his weekly allowance.' },
-  { name: 'Sofia Hartono', role: 'Daughter · 1st grade', age: 6, personal: 25, color: '#7a5fc0', note: 'Books, art supplies and her weekly allowance.' }
-];

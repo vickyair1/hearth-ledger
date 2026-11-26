@@ -1,706 +1,816 @@
-// HearthLedger — the Hartono family budget. One page, hash-routed, no network calls.
-// Every figure on every view is computed from the transaction array by computeMonth();
-// nothing is written down twice, so the views can never disagree with the ledger.
-import { TRANSACTIONS, BUDGETS, GOALS, BILLS, MEMBERS, CATEGORIES, CATEGORY_COLORS, MONTHS, MONTH_LABELS } from './data.js';
+/* HearthLedger — routing, month math, all 7 views, SVG charts, persistence.
+   Everything is computed from the TRANSACTIONS array in data.js.
+   Edits (transactions, budgets, goals, bills) live in localStorage under
+   "hearthledger-v1" and "Reset demo data" restores the seed. */
 
-const STORE_KEY = 'hearthledger-v1';
-const view = document.getElementById('view');
-const monthSelect = document.getElementById('monthSelect');
+"use strict";
 
-// ---------- small formatting helpers ----------
-const money = n => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const money0 = n => '$' + Math.round(Number(n)).toLocaleString('en-US');
-const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const pct = (part, whole) => whole > 0 ? Math.round(part / whole * 100) : 0;
-const monthOf = dateStr => dateStr.slice(0, 7);
-const ordinal = n => n + (n === 1 || n === 21 || n === 31 ? 'st' : n === 2 || n === 22 ? 'nd' : n === 3 || n === 23 ? 'rd' : 'th');
+/* ---------- state ---------- */
+const STORE_KEY = "hearthledger-v1";
 
-function fmtDate(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-function toast(msg) {
-  const t = document.createElement('div');
-  t.className = 'toast';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2600);
-}
-// When will this goal be finished, at its planned monthly contribution?
-function finishMonth(goal) {
-  const left = Math.max(0, goal.target - goal.saved);
-  if (left <= 0) return 'Reached!';
-  const months = Math.ceil(left / Math.max(1, goal.monthly));
-  const d = new Date(2026, 10 + months, 1); // counting forward from November 2026
-  return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-}
-
-// ---------- state & persistence ----------
-function seedState() {
+function defaultState() {
   return {
-    month: '2026-11',
-    tx: TRANSACTIONS.map((r, i) => ({ id: 't' + i, date: r[0], desc: r[1], cat: r[2], amt: r[3], type: r[4], who: r[5], merchant: r[6] })),
-    budgets: JSON.parse(JSON.stringify(BUDGETS)),
+    transactions: JSON.parse(JSON.stringify(TRANSACTIONS)),
+    budgets: Object.assign({}, BUDGETS),
     goals: JSON.parse(JSON.stringify(GOALS)),
-    bills: JSON.parse(JSON.stringify(BILLS))
+    bills: JSON.parse(JSON.stringify(BILLS)),
   };
 }
+
 function loadState() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return seedState();
+    if (!raw) return defaultState();
     const s = JSON.parse(raw);
-    if (!Array.isArray(s.tx) || !s.budgets || !Array.isArray(s.goals) || !Array.isArray(s.bills)) return seedState();
+    if (!s.transactions || !s.budgets || !s.goals || !s.bills) return defaultState();
     return s;
-  } catch { return seedState(); }
-}
-let state = loadState();
-function saveState() { try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch { /* private mode */ } }
-function resetDemo() {
-  state = seedState();
-  saveState();
-  monthSelect.value = state.month;
-  render();
-  toast('Demo data restored to the original Hartono ledger.');
+  } catch (e) {
+    return defaultState();
+  }
 }
 
-// The transactions page keeps its own filter state; it lives here, above the first
-// render(), so a direct load of #/transactions never reads it before it exists.
-let txFilter = { month: '2026-11', cat: 'all', type: 'all', q: '' };
-let editingId = null;
+function saveState() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { /* private mode */ }
+}
 
-// ---------- the single source of truth: computeMonth ----------
-// Summarises one month from the ledger: income, spending, savings and per-category totals.
-function computeMonth(month) {
-  const rows = state.tx.filter(t => monthOf(t.date) === month);
-  const byCat = Object.fromEntries(CATEGORIES.map(c => [c, 0]));
+const state = loadState();
+
+/* ---------- filters (declared before any render runs) ---------- */
+let txFilter = { month: "2026-11", category: "all", type: "all", q: "" };
+
+/* ---------- formatting helpers ---------- */
+function money(n) {
+  return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function money0(n) {
+  return "$" + Math.round(Number(n)).toLocaleString("en-US");
+}
+function pct(n, d) {
+  return d ? ((n / d) * 100).toFixed(1) + "%" : "—";
+}
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function shortDate(iso) {
+  const parts = iso.split("-");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return months[Number(parts[1]) - 1] + " " + Number(parts[2]);
+}
+function finishIn(goal) {
+  const left = goal.target - goal.saved;
+  if (left <= 0) return "Done";
+  if (!goal.monthly || goal.monthly <= 0) return "—";
+  const m = Math.ceil(left / goal.monthly);
+  return m + (m === 1 ? " mo" : " mos");
+}
+
+/* ---------- month math (the single source of truth) ---------- */
+function monthRows(ym) {
+  return state.transactions.filter(function (t) { return t.date.slice(0, 7) === ym; });
+}
+function computeMonth(ym) {
+  const rows = monthRows(ym);
   let income = 0, spent = 0;
-  for (const t of rows) {
-    if (t.type === 'income') income += t.amt;
-    else { spent += t.amt; byCat[t.cat] = (byCat[t.cat] || 0) + t.amt; }
-  }
+  const byCat = {};
+  CATEGORIES.forEach(function (c) { byCat[c] = 0; });
+  rows.forEach(function (t) {
+    if (t.type === "income") income += t.amount;
+    else {
+      spent += t.amount;
+      if (byCat[t.category] !== undefined) byCat[t.category] += t.amount;
+    }
+  });
   const saved = income - spent;
-  return { month, rows, income, spent, saved, rate: income > 0 ? saved / income * 100 : 0, byCat, count: rows.length };
-}
-function allMonthTotals() { return MONTHS.map(m => ({ month: m, ...computeMonth(m) })); }
-
-// Budget rows for one month, worst (closest to / over the limit) first.
-function healthRows(month, limit) {
-  const b = state.budgets[month] || {};
-  const cur = computeMonth(month);
-  return CATEGORIES
-    .map(c => ({ cat: c, spent: cur.byCat[c] || 0, budget: b[c] || 0 }))
-    .sort((a, b2) => (b2.spent / Math.max(1, b2.budget)) - (a.spent / Math.max(1, a.budget)))
-    .slice(0, limit);
-}
-function nextBills(n) {
-  return state.bills.filter(b => !b.paid).sort((a, b) => a.day - b.day).slice(0, n);
-}
-
-// ---------- hand-rolled SVG charts (no libraries, no network) ----------
-function donutSVG(byCat, size) {
-  const total = Object.values(byCat).reduce((a, b) => a + b, 0) || 1;
-  const cats = CATEGORIES.filter(c => byCat[c] > 0).sort((a, b) => byCat[b] - byCat[a]);
-  const r = 70, cx = 90, cy = 90, circ = 2 * Math.PI * r;
-  let offset = 0, segs = '';
-  for (const c of cats) {
-    const len = byCat[c] / total * circ;
-    segs += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${CATEGORY_COLORS[c]}" stroke-width="34" stroke-dasharray="${len.toFixed(1)} ${(circ - len).toFixed(1)}" stroke-dashoffset="${(-offset).toFixed(1)}" />`;
-    offset += len;
-  }
-  return `<svg class="chart" viewBox="0 0 180 180" width="${size}" height="${size}" role="img" aria-label="Spending by category donut chart">${segs}<circle cx="${cx}" cy="${cy}" r="52" fill="#fff"/><text x="${cx}" y="84" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2a24">${money0(total)}</text><text x="${cx}" y="102" text-anchor="middle" font-size="11" fill="#5b6b62">spent</text></svg>`;
-}
-function vbarSVG(items, opts) {
-  // items: [{label, value, color}]; opts: {height}
-  const h = opts.height || 180, w = 560, padB = 26, padT = 12;
-  const max = Math.max(...items.map(i => i.value), 1);
-  const bw = Math.min(64, (w - 40) / items.length * 0.55);
-  const step = (w - 20) / items.length;
-  let bars = '';
-  items.forEach((it, i) => {
-    const bh = Math.max(2, (it.value / max) * (h - padB - padT));
-    const x = 10 + i * step + (step - bw) / 2;
-    const y = h - padB - bh;
-    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw}" height="${bh.toFixed(1)}" rx="4" fill="${it.color}"><title>${esc(it.label)}: ${money(it.value)}</title></rect>`;
-    bars += `<text x="${(x + bw / 2).toFixed(1)}" y="${(y - 5).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2a24">${money0(it.value)}</text>`;
-    bars += `<text x="${(x + bw / 2).toFixed(1)}" y="${h - 8}" text-anchor="middle" font-size="12" fill="#5b6b62">${esc(it.label)}</text>`;
-  });
-  return `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Bar chart">${bars}</svg>`;
-}
-function groupedBarSVG(months, cats, byMonthCat) {
-  // byMonthCat[month][cat] — one group of bars per month, one colour per category.
-  const h = 200, w = 560, padB = 26, padT = 14;
-  const max = Math.max(...months.flatMap(m => cats.map(c => byMonthCat[m][c] || 0)), 1);
-  const groupW = (w - 30) / months.length, bw = Math.min(34, groupW / (cats.length + 0.6));
-  let out = '';
-  months.forEach((m, gi) => {
-    cats.forEach((c, ci) => {
-      const v = byMonthCat[m][c] || 0;
-      const bh = Math.max(1, v / max * (h - padB - padT));
-      const x = 15 + gi * groupW + ci * bw;
-      out += `<rect x="${x.toFixed(1)}" y="${(h - padB - bh).toFixed(1)}" width="${bw - 2}" height="${bh.toFixed(1)}" rx="3" fill="${CATEGORY_COLORS[c]}"><title>${MONTH_LABELS[m]} ${c}: ${money(v)}</title></rect>`;
-    });
-    out += `<text x="${(15 + gi * groupW + groupW / 2).toFixed(1)}" y="${h - 8}" text-anchor="middle" font-size="12" fill="#5b6b62">${MONTH_LABELS[m].split(' ')[0]}</text>`;
-  });
-  return `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Category trend chart">${out}</svg>`;
-}
-
-// ---------- DASHBOARD ----------
-function dashboardView() {
-  const m = state.month;
-  const cur = computeMonth(m);
-  const totals = allMonthTotals();
-  const topCats = CATEGORIES.filter(c => cur.byCat[c] > 0).sort((a, b) => cur.byCat[b] - cur.byCat[a]);
-  const biggest = topCats[0];
-  const prev = computeMonth(m === '2026-11' ? '2026-10' : '2026-09');
-  const spendChange = cur.spent - prev.spent;
-  const insight = cur.rate >= 20
-    ? `Good month: the Hartonos saved <strong>${money(cur.saved)} (${cur.rate.toFixed(0)}% of income)</strong>, above their 20% target. Biggest cost was ${biggest} at ${money(cur.byCat[biggest])}. Spending is ${spendChange >= 0 ? 'up' : 'down'} ${money(Math.abs(spendChange))} on last month — mostly the car repair and Thanksgiving groceries.`
-    : `Tight month: savings are ${money(cur.saved)} (${cur.rate.toFixed(0)}% of income), below the 20% target. Biggest cost was ${biggest} at ${money(cur.byCat[biggest])}.`;
-  const health = healthRows(m, 4);
-  const recent = [...state.tx].filter(t => monthOf(t.date) === m)
-    .sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
-  const paidTotal = state.bills.filter(b => b.paid).reduce((s, b) => s + b.amount, 0);
-  const salary = cur.rows.filter(t => t.type === 'income' && t.desc.includes('salary')).reduce((s, t) => s + t.amt, 0);
-
-  return `
-  <div class="page-head">
-    <div><h1>Good evening, Hartonos 👋</h1>
-    <p>Here is ${MONTH_LABELS[m]} at a glance — income, spending, savings and what is due next.</p></div>
-    <a class="btn" href="#/transactions">+ Add transaction</a>
-  </div>
-  <div class="insight">${insight}</div>
-  <section class="grid grid-4" aria-label="Month summary">
-    <div class="card stat income"><div class="label">Income · ${MONTH_LABELS[m]}</div><div class="value num">${money(cur.income)}</div><div class="sub">Salary ${money(salary)} + freelance &amp; other ${money(cur.income - salary)}</div></div>
-    <div class="card stat spent"><div class="label">Spent</div><div class="value num">${money(cur.spent)}</div><div class="sub">${cur.count} transactions this month</div></div>
-    <div class="card stat saved"><div class="label">Saved</div><div class="value num">${money(cur.saved)}</div><div class="sub">${money0(cur.saved)} kept for goals</div></div>
-    <div class="card stat"><div class="label">Savings rate</div><div class="value num">${cur.rate.toFixed(1)}%</div><div class="sub">Target: 20% · ${cur.rate >= 20 ? 'on target ✓' : 'below target'}</div></div>
-  </section>
-  <section class="grid grid-2" style="margin-top:16px">
-    <div class="card">
-      <h2>Income vs expenses</h2>
-      ${vbarSVG([{ label: 'Income', value: cur.income, color: '#1d5c3f' }, { label: 'Spent', value: cur.spent, color: '#c65d21' }, { label: 'Saved', value: cur.saved, color: '#d4a017' }], { height: 190 })}
-      <p class="muted small">Every dollar of income is either spent or saved — the three bars always add up.</p>
-    </div>
-    <div class="card">
-      <h2>Where the money went <a class="more" href="#/budget">See budgets →</a></h2>
-      <div class="donut-wrap">
-        ${donutSVG(cur.byCat, 180)}
-        <ul class="donut-legend">
-          ${topCats.slice(0, 6).map(c => `<li><span><span class="dot" style="background:${CATEGORY_COLORS[c]}"></span>${esc(c)}</span><strong class="num">${money(cur.byCat[c])}</strong></li>`).join('')}
-        </ul>
-      </div>
-    </div>
-  </section>
-  <section class="grid grid-2" style="margin-top:16px">
-    <div class="card">
-      <h2>Spending trend — Sep to Nov</h2>
-      ${vbarSVG(totals.map(t => ({ label: MONTH_LABELS[t.month].split(' ')[0], value: t.spent, color: t.month === m ? '#1d5c3f' : '#9db8a6' })), { height: 180 })}
-      <p class="muted small">September ${money(totals[0].spent)} · October ${money(totals[1].spent)} · November ${money(totals[2].spent)}. November is the dearest month — the $320 brake repair and Thanksgiving groceries.</p>
-    </div>
-    <div class="card">
-      <h2>Budget health — closest to the limit</h2>
-      ${health.map(h => {
-        const p = pct(h.spent, h.budget);
-        const cls = p >= 100 ? 'over' : p >= 85 ? 'warn' : '';
-        return `<div class="progress-row"><span>${esc(h.cat)}</span><span class="pct num">${p}%</span><div class="bar ${cls}"><span style="width:${Math.min(100, p)}%"></span></div><span class="small muted num">${money(h.spent)} of ${money(h.budget)}</span><span class="small ${p >= 100 ? 'neg' : 'pos'}">${p >= 100 ? 'over by ' + money(h.spent - h.budget) : money(h.budget - h.spent) + ' left'}</span></div>`;
-      }).join('')}
-      <p style="margin-top:10px"><a href="#/budget">Open the full budget →</a></p>
-    </div>
-  </section>
-  <section class="grid grid-2" style="margin-top:16px">
-    <div class="card">
-      <h2>Upcoming bills <a class="more" href="#/bills">All bills →</a></h2>
-      ${nextBills(5).map(b => `<div class="progress-row"><span>${esc(b.name)}</span><strong class="num">Due ${ordinal(b.day)} Nov · ${money(b.amount)}</strong></div>`).join('') || '<p class="muted">Everything is paid — nice work.</p>'}
-      <p class="muted small" style="margin-top:10px">${money(paidTotal)} already paid this month · ${state.bills.filter(b => b.paid).length} of ${state.bills.length} bills settled.</p>
-    </div>
-    <div class="card">
-      <h2>Recent transactions <a class="more" href="#/transactions">Full ledger →</a></h2>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="num">Amount</th></tr></thead>
-        <tbody>${recent.map(t => `<tr><td>${fmtDate(t.date)}</td><td>${esc(t.desc)}</td><td><span class="badge badge-cat">${esc(t.cat)}</span></td><td class="num ${t.type === 'income' ? 'pos' : 'neg'}">${t.type === 'income' ? '+' : '−'}${money(t.amt)}</td></tr>`).join('')}</tbody>
-      </table></div>
-    </div>
-  </section>`;
-}
-
-// ---------- TRANSACTIONS ----------
-function visibleTransactions() {
-  const q = txFilter.q.trim().toLowerCase();
-  return state.tx.filter(t =>
-    (txFilter.month === 'all' || monthOf(t.date) === txFilter.month) &&
-    (txFilter.cat === 'all' || t.cat === txFilter.cat) &&
-    (txFilter.type === 'all' || t.type === txFilter.type) &&
-    (!q || (t.desc + ' ' + t.merchant + ' ' + t.who).toLowerCase().includes(q))
-  ).sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
-}
-function balancesById() {
-  // Cumulative balance over ALL transactions in date order (income adds, expense subtracts).
-  const sorted = [...state.tx].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-  const bal = {};
-  let run = 0;
-  for (const t of sorted) { run += t.type === 'income' ? t.amt : -t.amt; bal[t.id] = run; }
-  return bal;
-}
-function transactionsView() {
-  const rows = visibleTransactions();
-  const bal = balancesById();
-  const inc = rows.filter(t => t.type === 'income').reduce((s, t) => s + t.amt, 0);
-  const exp = rows.filter(t => t.type === 'expense').reduce((s, t) => s + t.amt, 0);
-  const edit = editingId ? state.tx.find(t => t.id === editingId) : null;
-  return `
-  <div class="page-head"><div><h1>Transactions</h1>
-  <p>The full Hartono ledger — every dollar in and out, September to November 2026. Filter it, add a row, or fix a mistake.</p></div>
-  <span class="muted small">${state.tx.length} transactions in total</span></div>
-
-  <section class="card" style="margin-bottom:16px">
-    <h2>${edit ? 'Edit transaction' : 'Add a transaction'}</h2>
-    <form class="inline-form" id="txForm">
-      <div class="field"><label for="fDate">Date</label><input type="date" id="fDate" required value="${edit ? edit.date : '2026-11-26'}"></div>
-      <div class="field"><label for="fDesc">Description</label><input type="text" id="fDesc" required maxlength="80" placeholder="e.g. Weekly groceries" value="${edit ? esc(edit.desc) : ''}"></div>
-      <div class="field"><label for="fCat">Category</label><select id="fCat">${CATEGORIES.map(c => `<option ${edit && edit.cat === c ? 'selected' : ''}>${c}</option>`).join('')}<option ${edit && edit.cat === 'Income' ? 'selected' : ''}>Income</option></select></div>
-      <div class="field"><label for="fAmt">Amount ($)</label><input type="number" id="fAmt" required min="0.01" step="0.01" placeholder="0.00" value="${edit ? edit.amt : ''}"></div>
-      <div class="field"><label for="fType">Type</label><select id="fType"><option value="expense" ${edit && edit.type === 'expense' ? 'selected' : ''}>Expense</option><option value="income" ${edit && edit.type === 'income' ? 'selected' : ''}>Income</option></select></div>
-      <div class="field"><label for="fWho">Member</label><select id="fWho">${MEMBERS.map(mb => `<option ${edit && edit.who === mb.name.split(' ')[0] ? 'selected' : ''}>${mb.name.split(' ')[0]}</option>`).join('')}</select></div>
-      <div class="btn-row"><button class="btn" type="submit">${edit ? 'Save changes' : 'Add transaction'}</button>
-      ${edit ? '<button class="btn btn-ghost" type="button" id="cancelEdit">Cancel</button>' : ''}</div>
-    </form>
-  </section>
-
-  <section class="card">
-    <div class="filters">
-      <div class="field"><label for="fltMonth">Month</label><select id="fltMonth"><option value="all">All months</option>${MONTHS.map(m => `<option value="${m}" ${txFilter.month === m ? 'selected' : ''}>${MONTH_LABELS[m]}</option>`).join('')}</select></div>
-      <div class="field"><label for="fltCat">Category</label><select id="fltCat"><option value="all">All categories</option>${CATEGORIES.map(c => `<option ${txFilter.cat === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
-      <div class="field"><label for="fltType">Type</label><select id="fltType"><option value="all">Income &amp; expenses</option><option value="income" ${txFilter.type === 'income' ? 'selected' : ''}>Income only</option><option value="expense" ${txFilter.type === 'expense' ? 'selected' : ''}>Expenses only</option></select></div>
-      <div class="field search"><label for="fltQ">Search</label><input type="search" id="fltQ" placeholder="Search description, merchant or member…" value="${esc(txFilter.q)}"></div>
-    </div>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Date</th><th>Description</th><th>Merchant</th><th>Category</th><th>Member</th><th class="num">Amount</th><th class="num">Running balance</th><th>Actions</th></tr></thead>
-      <tbody>
-      ${rows.map(t => `<tr>
-        <td>${fmtDate(t.date)}</td><td>${esc(t.desc)}</td><td class="muted">${esc(t.merchant)}</td>
-        <td><span class="badge badge-cat">${esc(t.cat)}</span></td><td>${esc(t.who)}</td>
-        <td class="num ${t.type === 'income' ? 'pos' : 'neg'}">${t.type === 'income' ? '+' : '−'}${money(t.amt)}</td>
-        <td class="num">${money(bal[t.id])}</td>
-        <td><div class="btn-row"><button class="btn btn-small btn-ghost" type="button" data-edit="${t.id}">Edit</button><button class="btn btn-small btn-danger" type="button" data-del="${t.id}">Delete</button></div></td>
-      </tr>`).join('') || '<tr><td colspan="8" class="muted">No transactions match these filters.</td></tr>'}
-      </tbody>
-      <tfoot><tr><td colspan="5">${rows.length} transactions shown</td><td class="num pos">+${money(inc)}</td><td class="num neg">−${money(exp)}</td><td class="num">Net ${money(inc - exp)}</td></tr></tfoot>
-    </table></div>
-  </section>`;
-}
-function bindTransactions() {
-  const form = document.getElementById('txForm');
-  form.addEventListener('submit', e => {
-    e.preventDefault();
-    const amt = parseFloat(document.getElementById('fAmt').value);
-    if (!amt || amt <= 0) { toast('Enter an amount above $0.'); return; }
-    const row = {
-      date: document.getElementById('fDate').value,
-      desc: document.getElementById('fDesc').value.trim(),
-      cat: document.getElementById('fCat').value,
-      amt, type: document.getElementById('fType').value,
-      who: document.getElementById('fWho').value,
-      merchant: document.getElementById('fDesc').value.trim()
-    };
-    if (editingId) {
-      const t = state.tx.find(x => x.id === editingId);
-      Object.assign(t, row); editingId = null; toast('Transaction updated.');
-    } else {
-      state.tx.push({ id: 't' + Date.now(), ...row });
-      toast('Transaction added — totals updated everywhere.');
-    }
-    saveState(); render();
-  });
-  const cancel = document.getElementById('cancelEdit');
-  if (cancel) cancel.addEventListener('click', () => { editingId = null; render(); });
-  document.getElementById('fltMonth').addEventListener('change', e => { txFilter.month = e.target.value; render(); });
-  document.getElementById('fltCat').addEventListener('change', e => { txFilter.cat = e.target.value; render(); });
-  document.getElementById('fltType').addEventListener('change', e => { txFilter.type = e.target.value; render(); });
-  document.getElementById('fltQ').addEventListener('input', e => {
-    txFilter.q = e.target.value; render();
-    const q = document.getElementById('fltQ');
-    q.focus(); q.setSelectionRange(q.value.length, q.value.length);
-  });
-  view.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => { editingId = b.dataset.edit; render(); window.scrollTo(0, 0); }));
-  view.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
-    const t = state.tx.find(x => x.id === b.dataset.del);
-    if (t && confirm(`Delete “${t.desc}” (${money(t.amt)})?`)) {
-      state.tx = state.tx.filter(x => x.id !== t.id); saveState(); render(); toast('Transaction deleted.');
-    }
-  }));
-}
-
-// ---------- BUDGET ----------
-// The 50/30/20 guide: needs = Housing, Groceries, Utilities, Transport, Kids & School,
-// Health, Household; wants = Dining Out, Entertainment, Subscriptions, Personal, Other.
-const NEEDS_CATS = ['Housing', 'Groceries', 'Utilities', 'Transport', 'Kids & School', 'Health', 'Household'];
-const WANTS_CATS = ['Dining Out', 'Entertainment', 'Subscriptions', 'Personal', 'Other'];
-
-function budgetView() {
-  const m = state.month;
-  const cur = computeMonth(m);
-  const b = state.budgets[m] || {};
-  const totalBudget = CATEGORIES.reduce((s, c) => s + (b[c] || 0), 0);
-  const totalSpent = cur.spent;
-  const over = CATEGORIES.filter(c => (cur.byCat[c] || 0) > (b[c] || 0)).length;
-  const needs = NEEDS_CATS.reduce((s, c) => s + (cur.byCat[c] || 0), 0);
-  const wants = WANTS_CATS.reduce((s, c) => s + (cur.byCat[c] || 0), 0);
-  const needsPct = cur.income ? needs / cur.income * 100 : 0;
-  const wantsPct = cur.income ? wants / cur.income * 100 : 0;
-  const verdict = needsPct <= 50 && wantsPct <= 30 && cur.rate >= 20
-    ? 'On track — needs, wants and savings all sit inside the 50/30/20 guide.'
-    : `Needs are ${needsPct.toFixed(0)}% of income (guide: 50%) and wants ${wantsPct.toFixed(0)}% (guide: 30%). ${needsPct > 50 ? 'Housing and groceries push needs over — the car repair this month did not help. ' : ''}Savings at ${cur.rate.toFixed(0)}% ${cur.rate >= 20 ? 'beat' : 'miss'} the 20% target.`;
-  return `
-  <div class="page-head"><div><h1>Budget — ${MONTH_LABELS[m]}</h1>
-  <p>Twelve category budgets for the month. Click any budget amount to change it — progress updates at once. Total budget ${money(totalBudget)} against ${money(totalSpent)} spent.</p></div>
-  <span class="badge ${over ? 'badge-over' : 'badge-under'}">${over} categor${over === 1 ? 'y' : 'ies'} over budget</span></div>
-
-  <section class="grid grid-2-1">
-    <div class="card">
-      <h2>Category budgets</h2>
-      ${CATEGORIES.map(c => {
-        const spent = cur.byCat[c] || 0, bud = b[c] || 0, p = pct(spent, bud);
-        const cls = p >= 100 ? 'over' : p >= 85 ? 'warn' : '';
-        const diff = bud - spent;
-        return `<div class="progress-row">
-          <span><span class="dot" style="background:${CATEGORY_COLORS[c]}"></span>${esc(c)}</span>
-          <span class="num">${money(spent)} <span class="muted">/ </span><button class="btn btn-small btn-ghost" type="button" data-budget-cat="${esc(c)}" title="Click to edit this budget">${money(bud)}</button></span>
-          <div class="bar ${cls}"><span style="width:${Math.min(100, p)}%"></span></div>
-          <span class="small muted">${p}% used</span>
-          <span class="small ${diff < 0 ? 'neg' : 'pos'}">${diff < 0 ? 'Over by ' + money(-diff) : money(diff) + ' left'}</span>
-        </div>`;
-      }).join('')}
-      <div class="progress-row" style="margin-top:6px"><strong>Total</strong><strong class="num">${money(totalSpent)} / ${money(totalBudget)}</strong>
-      <div class="bar ${totalSpent > totalBudget ? 'over' : ''}"><span style="width:${Math.min(100, pct(totalSpent, totalBudget))}%"></span></div>
-      <span class="small muted">${pct(totalSpent, totalBudget)}% used</span>
-      <span class="small ${totalBudget - totalSpent < 0 ? 'neg' : 'pos'}">${totalBudget - totalSpent < 0 ? 'Over by ' + money(totalSpent - totalBudget) : money(totalBudget - totalSpent) + ' left'}</span></div>
-    </div>
-    <div>
-      <div class="card" style="margin-bottom:16px">
-        <h2>The 50/30/20 rule</h2>
-        <p class="small muted">Needs, wants and savings as a share of ${money(cur.income)} income — computed from this month's real spending.</p>
-        <div class="progress-row"><span>Needs — 50% guide</span><strong class="num">${needsPct.toFixed(1)}% · ${money(needs)}</strong><div class="bar ${needsPct > 50 ? 'warn' : ''}"><span style="width:${Math.min(100, needsPct)}%"></span></div><span class="small muted">Housing, groceries, utilities, transport, kids, health, household</span></div>
-        <div class="progress-row"><span>Wants — 30% guide</span><strong class="num">${wantsPct.toFixed(1)}% · ${money(wants)}</strong><div class="bar ${wantsPct > 30 ? 'warn' : ''}"><span style="width:${Math.min(100, wantsPct)}%"></span></div><span class="small muted">Dining out, entertainment, subscriptions, personal, other</span></div>
-        <div class="progress-row"><span>Savings — 20% guide</span><strong class="num">${cur.rate.toFixed(1)}% · ${money(cur.saved)}</strong><div class="bar"><span style="width:${Math.min(100, cur.rate)}%"></span></div><span class="small muted">Everything left over, swept to goals</span></div>
-        <p style="margin-top:10px"><strong>Verdict:</strong> ${verdict}</p>
-      </div>
-      <div class="card">
-        <h2>Budget tips</h2>
-        <ul>
-          <li><strong>Groceries ${money(cur.byCat['Groceries'])}:</strong> the Thanksgiving shop pushed this ${money(Math.max(0, cur.byCat['Groceries'] - (b['Groceries'] || 0)))} over budget — plan the holiday shop a week earlier next year.</li>
-          <li><strong>Other ${money(cur.byCat['Other'])}:</strong> the $320 brake repair is a one-off, not a habit — the emergency fund exists for exactly this.</li>
-          <li><strong>Subscriptions ${money(cur.byCat['Subscriptions'])}:</strong> seven small charges add up; review them every quarter and cancel what nobody opened.</li>
-        </ul>
-      </div>
-    </div>
-  </section>`;
-}
-function bindBudget() {
-  view.querySelectorAll('[data-budget-cat]').forEach(btn => btn.addEventListener('click', () => {
-    const cat = btn.dataset.budgetCat;
-    const cur = state.budgets[state.month][cat];
-    const next = prompt(`New monthly budget for ${cat} (current ${money(cur)}):`, String(cur));
-    if (next === null) return;
-    const val = parseFloat(next);
-    if (!val || val <= 0) { toast('Enter a budget above $0.'); return; }
-    state.budgets[state.month][cat] = Math.round(val * 100) / 100;
-    saveState(); render(); toast(`${cat} budget set to ${money(val)}.`);
-  }));
-}
-
-// ---------- GOALS ----------
-function goalsView() {
-  const totalSaved = state.goals.reduce((s, g) => s + g.saved, 0);
-  const totalTarget = state.goals.reduce((s, g) => s + g.target, 0);
-  return `
-  <div class="page-head"><div><h1>Savings goals</h1>
-  <p>Six things the Hartonos are saving for — ${money(totalSaved)} saved towards ${money(totalTarget)} in total. Add money to any goal and watch its finish date move closer.</p></div>
-  <span class="badge badge-under">${pct(totalSaved, totalTarget)}% of all goals funded</span></div>
-
-  <section class="goal-grid">
-    ${state.goals.map((g, i) => {
-      const p = pct(g.saved, g.target);
-      const done = g.saved >= g.target;
-      return `<article class="card goal-card">
-        <div class="goal-top"><div><span class="goal-icon" aria-hidden="true">${g.icon}</span><h2 style="margin-top:4px">${esc(g.name)}</h2></div>
-        <span class="badge ${done ? 'badge-paid' : 'badge-due'}">${done ? 'Reached ✓' : p + '%'}</span></div>
-        <div class="goal-amounts num">${money(g.saved)} <small>of ${money(g.target)}</small></div>
-        <div class="bar ${done ? '' : p >= 75 ? 'warn' : ''}"><span style="width:${Math.min(100, p)}%"></span></div>
-        <p class="small muted" style="margin-top:8px">${esc(g.note)}</p>
-        <p class="small"><strong>${money(g.monthly)}/month</strong> · ${money(Math.max(0, g.target - g.saved))} to go · finish <strong>${finishMonth(g)}</strong></p>
-        <div class="goal-actions">
-          <button class="btn btn-small" type="button" data-goal-add="${i}" data-amt="50">+$50</button>
-          <button class="btn btn-small" type="button" data-goal-add="${i}" data-amt="100">+$100</button>
-          <label class="small" for="custom-${i}">Custom $</label>
-          <input type="number" id="custom-${i}" min="1" step="1" placeholder="25" aria-label="Custom contribution for ${esc(g.name)}">
-          <button class="btn btn-small btn-amber" type="button" data-goal-custom="${i}">Add</button>
-        </div>
-      </article>`;
-    }).join('')}
-  </section>
-
-  <section class="card" style="margin-top:16px">
-    <h2>Add a new goal</h2>
-    <form class="inline-form" id="goalForm">
-      <div class="field"><label for="gName">Goal name</label><input type="text" id="gName" required maxlength="40" placeholder="e.g. New washing machine"></div>
-      <div class="field"><label for="gTarget">Target ($)</label><input type="number" id="gTarget" required min="1" step="1" placeholder="1000"></div>
-      <div class="field"><label for="gSaved">Already saved ($)</label><input type="number" id="gSaved" min="0" step="1" value="0"></div>
-      <div class="field"><label for="gMonthly">Monthly contribution ($)</label><input type="number" id="gMonthly" min="1" step="1" placeholder="100"></div>
-      <div class="btn-row"><button class="btn" type="submit">Add goal</button></div>
-    </form>
-  </section>`;
-}
-function bindGoals() {
-  const contribute = (i, amt) => {
-    const g = state.goals[i];
-    g.saved = Math.min(g.target, g.saved + amt);
-    saveState(); render();
-    toast(`${money(amt)} added to ${g.name}.`);
+  return {
+    rows: rows, income: income, spent: spent, saved: saved,
+    rate: income ? (saved / income) * 100 : 0, byCat: byCat,
   };
-  view.querySelectorAll('[data-goal-add]').forEach(b => b.addEventListener('click', () => contribute(Number(b.dataset.goalAdd), Number(b.dataset.amt))));
-  view.querySelectorAll('[data-goal-custom]').forEach(b => b.addEventListener('click', () => {
-    const amt = parseFloat(document.getElementById('custom-' + b.dataset.goalCustom).value);
-    if (!amt || amt <= 0) { toast('Enter an amount above $0.'); return; }
-    contribute(Number(b.dataset.goalCustom), amt);
-  }));
-  document.getElementById('goalForm').addEventListener('submit', e => {
-    e.preventDefault();
-    const name = document.getElementById('gName').value.trim();
-    const target = parseFloat(document.getElementById('gTarget').value);
-    const saved = parseFloat(document.getElementById('gSaved').value) || 0;
-    const monthly = parseFloat(document.getElementById('gMonthly').value) || 100;
-    if (!name || !target || target <= 0) { toast('Give the goal a name and a target above $0.'); return; }
-    state.goals.push({ name, target, saved: Math.min(saved, target), monthly, icon: '🎯', note: 'Added by the Hartono family.' });
-    saveState(); render(); toast(`Goal “${name}” added.`);
+}
+function totalBudget() {
+  return CATEGORIES.reduce(function (s, c) { return s + (state.budgets[c] || 0); }, 0);
+}
+function topMerchants(ym, limit) {
+  const map = {};
+  monthRows(ym).forEach(function (t) {
+    if (t.type !== "expense") return;
+    map[t.merchant] = (map[t.merchant] || 0) + t.amount;
   });
+  return Object.keys(map).map(function (k) { return { name: k, total: map[k] }; })
+    .sort(function (a, b) { return b.total - a.total; }).slice(0, limit);
 }
-
-// ---------- BILLS ----------
-function billsView() {
-  const paid = state.bills.filter(b => b.paid);
-  const unpaid = state.bills.filter(b => !b.paid).sort((a, b) => a.day - b.day);
-  const paidTotal = paid.reduce((s, b) => s + b.amount, 0);
-  const total = state.bills.reduce((s, b) => s + b.amount, 0);
-  const today = 26; // the demo's "today" in November 2026
-  // November 2026 calendar: 1 Nov 2026 is a Sunday.
-  const firstWeekday = new Date(2026, 10, 1).getDay();
-  const cells = [];
-  for (let i = 0; i < firstWeekday; i++) cells.push('<div class="cal-day empty"></div>');
-  for (let d = 1; d <= 30; d++) {
-    const due = state.bills.filter(b => b.day === d);
-    cells.push(`<div class="cal-day ${d === today ? 'today' : ''} ${due.length ? 'has-bill' : ''}"><span class="dnum">${d}</span>${due.map(b => `<span class="cal-bill ${b.paid ? 'paid' : ''}">${esc(b.name.split(' — ')[0].split(' - ')[0])} ${money0(b.amount)}</span>`).join('')}</div>`);
-  }
-  return `
-  <div class="page-head"><div><h1>Bills — November 2026</h1>
-  <p>Every recurring bill, its due day and whether it is paid. Tick a bill paid and the totals update at once.</p></div>
-  <span class="badge ${unpaid.length === 0 ? 'badge-paid' : 'badge-due'}">${paid.length} of ${state.bills.length} paid · ${money(paidTotal)} of ${money(total)}</span></div>
-
-  <section class="grid grid-2-1">
-    <div class="card">
-      <h2>November calendar</h2>
-      <div class="calendar" role="grid" aria-label="November 2026 bill calendar">
-        ${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => `<div class="cal-head">${d}</div>`).join('')}
-        ${cells.join('')}
-      </div>
-      <p class="muted small" style="margin-top:8px">Today is 26 November. Bills already paid are struck through on the calendar.</p>
-    </div>
-    <div class="card">
-      <h2>Upcoming reminders</h2>
-      ${unpaid.slice(0, 4).map(b => `<div class="progress-row"><span>${esc(b.name)}</span><strong class="num">${money(b.amount)} · due ${ordinal(b.day)} Nov</strong><span class="small muted">${b.autopay ? 'Autopay on — will clear itself' : 'Pay manually before the due day'}</span></div>`).join('') || '<p class="muted">No bills left to pay this month. 🎉</p>'}
-      <p class="small" style="margin-top:10px"><strong>${money(total - paidTotal)}</strong> still to pay in November.</p>
-    </div>
-  </section>
-
-  <section class="card" style="margin-top:16px">
-    <h2>All bills</h2>
-    ${[...state.bills].sort((a, b) => a.day - b.day).map(b => {
-      const idx = state.bills.indexOf(b);
-      return `<div class="bill-row">
-        <span class="bill-name"><strong>${esc(b.name)}</strong><br><span class="muted small">${esc(b.category)} · due ${ordinal(b.day)} November</span></span>
-        ${b.autopay ? '<span class="badge badge-auto">Autopay</span>' : '<span class="badge badge-due">Manual</span>'}
-        <span class="bill-amt num">${money(b.amount)}</span>
-        <span class="badge ${b.paid ? 'badge-paid' : 'badge-due'}">${b.paid ? 'Paid ✓' : 'Unpaid'}</span>
-        <label class="switch"><input type="checkbox" data-bill="${idx}" ${b.paid ? 'checked' : ''}> Mark paid</label>
-      </div>`;
-    }).join('')}
-  </section>`;
-}
-function bindBills() {
-  view.querySelectorAll('[data-bill]').forEach(cb => cb.addEventListener('change', () => {
-    const b = state.bills[Number(cb.dataset.bill)];
-    b.paid = cb.checked; saveState(); render();
-    toast(b.paid ? `${b.name} marked paid.` : `${b.name} marked unpaid.`);
-  }));
-}
-
-// ---------- REPORTS ----------
-function reportsView() {
-  const totals = allMonthTotals();
-  const byMonthCat = {};
-  for (const t of totals) byMonthCat[t.month] = t.byCat;
-  const topCats = ['Housing', 'Groceries', 'Kids & School', 'Dining Out', 'Other'];
-  // Top 5 merchants by spend across all three months.
-  const merch = {};
-  for (const t of state.tx) if (t.type === 'expense') merch[t.merchant] = (merch[t.merchant] || 0) + t.amt;
-  const topMerchants = Object.entries(merch).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const allSpent = totals.reduce((s, t) => s + t.spent, 0);
-  // Insights, all computed from the ledger — never typed in by hand.
-  const catChange = CATEGORIES
-    .map(c => ({ cat: c, sep: byMonthCat['2026-09'][c] || 0, nov: byMonthCat['2026-11'][c] || 0 }))
-    .map(x => ({ ...x, diff: x.nov - x.sep }))
-    .sort((a, b) => b.diff - a.diff);
-  const biggestRise = catChange[0], biggestFall = catChange[catChange.length - 1];
-  const nov = computeMonth('2026-11');
-  const diningShare = (nov.byCat['Dining Out'] / nov.spent * 100).toFixed(1);
-  const bestSaver = totals.reduce((a, b) => (b.rate > a.rate ? b : a), totals[0]);
-  const insights = [
-    `Biggest rise since September: <strong>${biggestRise.cat}</strong> is up ${money(biggestRise.diff)} (${money(biggestRise.sep)} → ${money(biggestRise.nov)}), driven by the November car repair.`,
-    `Biggest fall since September: <strong>${biggestFall.cat}</strong> is down ${money(-biggestFall.diff)} (${money(biggestFall.sep)} → ${money(biggestFall.nov)}).`,
-    `Dining out is <strong>${diningShare}%</strong> of November spending — ${money(nov.byCat['Dining Out'])} across 7 meals out. Cooking two more nights a week would save about $60 a month.`,
-    `Best saving month so far: <strong>${MONTH_LABELS[bestSaver.month]}</strong> at ${bestSaver.rate.toFixed(1)}% (${money(bestSaver.saved)} saved).`
-  ];
-  return `
-  <div class="page-head"><div><h1>Reports — Sep to Nov 2026</h1>
-  <p>Three months side by side: where the money came from, where it went, and what changed.</p></div>
-  <div class="btn-row"><button class="btn" type="button" id="exportCsv">Export CSV</button><button class="btn btn-ghost" type="button" id="printReport">Print</button></div></div>
-
-  <section class="card" style="margin-bottom:16px">
-    <h2>Month comparison</h2>
-    <div class="table-wrap"><table>
-      <thead><tr><th></th>${totals.map(t => `<th class="num">${MONTH_LABELS[t.month]}</th>`).join('')}</tr></thead>
-      <tbody>
-        <tr><td>Income</td>${totals.map(t => `<td class="num pos">${money(t.income)}</td>`).join('')}</tr>
-        <tr><td>Spending</td>${totals.map(t => `<td class="num neg">${money(t.spent)}</td>`).join('')}</tr>
-        <tr><td>Saved</td>${totals.map(t => `<td class="num pos">${money(t.saved)}</td>`).join('')}</tr>
-        <tr><td>Savings rate</td>${totals.map(t => `<td class="num">${t.rate.toFixed(1)}%</td>`).join('')}</tr>
-        <tr><td>Transactions</td>${totals.map(t => `<td class="num">${t.count}</td>`).join('')}</tr>
-      </tbody>
-    </table></div>
-    ${vbarSVG(totals.map(t => ({ label: MONTH_LABELS[t.month].split(' ')[0], value: t.spent, color: '#1d5c3f' })), { height: 170 })}
-  </section>
-
-  <section class="grid grid-2">
-    <div class="card">
-      <h2>Category trend — top 5 categories</h2>
-      ${groupedBarSVG(MONTHS, topCats, byMonthCat)}
-      <div class="legend">${topCats.map(c => `<span><span class="dot" style="background:${CATEGORY_COLORS[c]}"></span>${esc(c)}</span>`).join('')}</div>
-      <p class="muted small">Housing is flat at ${money(1650)} a month — rent never moves. Groceries and Kids &amp; School climb into November.</p>
-    </div>
-    <div class="card">
-      <h2>Top 5 merchants by spend</h2>
-      ${topMerchants.map(([name, amt], i) => `<div class="progress-row"><span>${i + 1}. ${esc(name)}</span><strong class="num">${money(amt)}</strong><div class="bar"><span style="width:${Math.round(amt / topMerchants[0][1] * 100)}%"></span></div><span class="small muted">${(amt / allSpent * 100).toFixed(1)}% of all spending</span></div>`).join('')}
-    </div>
-  </section>
-
-  <section class="card" style="margin-top:16px">
-    <h2>What the numbers say</h2>
-    <ul>${insights.map(i => `<li>${i}</li>`).join('')}</ul>
-  </section>`;
-}
-function bindReports() {
-  document.getElementById('exportCsv').addEventListener('click', () => {
-    const head = 'Date,Description,Merchant,Category,Type,Member,Amount\n';
-    const lines = [...state.tx].sort((a, b) => a.date.localeCompare(b.date))
-      .map(t => [t.date, `"${t.desc.replace(/"/g, '""')}"`, `"${t.merchant.replace(/"/g, '""')}"`, t.cat, t.type, t.who, t.amt.toFixed(2)].join(','));
-    const blob = new Blob([head + lines.join('\n')], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'hearthledger-transactions.csv';
-    a.click(); URL.revokeObjectURL(a.href);
-    toast(`Exported ${lines.length} transactions as CSV.`);
+function memberSpend(ym) {
+  const out = {};
+  MEMBERS.forEach(function (m) { out[m.name] = 0; });
+  let shared = 0;
+  monthRows(ym).forEach(function (t) {
+    if (t.type !== "expense") return;
+    if (t.member === "Shared") shared += t.amount;
+    else if (out[t.member] !== undefined) out[t.member] += t.amount;
   });
-  document.getElementById('printReport').addEventListener('click', () => window.print());
+  return { per: out, shared: shared };
 }
 
-// ---------- HOUSEHOLD ----------
-function householdView() {
-  const m = state.month;
-  const cur = computeMonth(m);
-  // Per-member spending: what each person paid. Kids & School is split between Leo and Sofia.
-  const memberSpent = Object.fromEntries(MEMBERS.map(mb => [mb.name.split(' ')[0], 0]));
-  for (const t of cur.rows) {
-    if (t.type !== 'expense') continue;
-    if (t.cat === 'Kids & School') { memberSpent['Leo'] += t.amt / 2; memberSpent['Sofia'] += t.amt / 2; }
-    else if (memberSpent[t.who] !== undefined) memberSpent[t.who] += t.amt;
-  }
-  const sharedCats = ['Housing', 'Groceries', 'Utilities', 'Transport', 'Household', 'Kids & School', 'Health', 'Subscriptions'];
-  const shared = sharedCats.reduce((s, c) => s + (cur.byCat[c] || 0), 0);
-  const personal = cur.spent - shared;
-  return `
-  <div class="page-head"><div><h1>The Hartono household</h1>
-  <p>Four people, one budget. Daniel and Maya earn and run the house; Leo (9) and Sofia (6) have their own small allowances — and their school costs are split between them below.</p></div></div>
+/* ---------- tiny SVG chart helpers (hand-rolled, no libs) ---------- */
+const PALETTE = ["#2f5d50", "#c05621", "#2b6cb0", "#b7791f", "#975a16", "#6b7c59",
+  "#8a5a83", "#4a6b6b", "#a34a3a", "#7a6a53", "#3d7a5e", "#9c6644"];
 
-  <section class="grid grid-2">
-    ${MEMBERS.map(mb => {
-      const key = mb.name.split(' ')[0];
-      const spent = memberSpent[key] || 0;
-      const initials = mb.name.split(' ').map(w => w[0]).join('');
-      return `<article class="card member-card">
-        <div class="member-head"><span class="avatar" style="background:${mb.color}">${initials}</span>
-        <div><h2 style="margin:0">${esc(mb.name)}</h2><span class="muted small">${esc(mb.role)} · age ${mb.age}</span></div></div>
-        <p class="small">${esc(mb.note)}</p>
-        <div class="progress-row"><span>Spent in ${MONTH_LABELS[m].split(' ')[0]}</span><strong class="num">${money(spent)}</strong><div class="bar"><span style="width:${Math.min(100, spent / Math.max(1, cur.spent) * 100)}%"></span></div><span class="small muted">${(spent / Math.max(1, cur.spent) * 100).toFixed(1)}% of household spending</span></div>
-        <p class="small" style="margin-top:8px">Personal budget: <strong>${money(mb.personal)}/month</strong> ${key === 'Daniel' || key === 'Maya' ? '· personal spending comes from the Personal category' : '· weekly allowance, paid in cash on Fridays'}</p>
-      </article>`;
-    }).join('')}
-  </section>
-
-  <section class="card" style="margin-top:16px">
-    <h2>Shared vs personal — ${MONTH_LABELS[m]}</h2>
-    <div class="split-bar" role="img" aria-label="Shared ${money(shared)} and personal ${money(personal)}">
-      <span style="width:${(shared / Math.max(1, cur.spent) * 100).toFixed(1)}%;background:#1d5c3f"></span>
-      <span style="width:${(personal / Math.max(1, cur.spent) * 100).toFixed(1)}%;background:#d4a017"></span>
-    </div>
-    <div class="split-legend">
-      <span><span class="dot" style="background:#1d5c3f"></span>Shared household — ${money(shared)} (${(shared / Math.max(1, cur.spent) * 100).toFixed(1)}%)</span>
-      <span><span class="dot" style="background:#d4a017"></span>Personal &amp; treats — ${money(personal)} (${(personal / Math.max(1, cur.spent) * 100).toFixed(1)}%)</span>
-    </div>
-    <p class="muted small" style="margin-top:10px">Shared covers rent, groceries, utilities, transport, the house, the kids, health and subscriptions. Personal covers dining out, entertainment, personal items and one-off costs — the part each person controls day to day.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Member</th><th>Role</th><th class="num">Personal budget</th><th class="num">Spent this month</th><th class="num">Share of household spend</th></tr></thead>
-      <tbody>
-      ${MEMBERS.map(mb => {
-        const key = mb.name.split(' ')[0];
-        const spent = memberSpent[key] || 0;
-        return `<tr><td>${esc(mb.name)}</td><td>${esc(mb.role)}</td><td class="num">${money(mb.personal)}</td><td class="num">${money(spent)}</td><td class="num">${(spent / Math.max(1, cur.spent) * 100).toFixed(1)}%</td></tr>`;
-      }).join('')}
-      </tbody>
-      <tfoot><tr><td colspan="3">Household total</td><td class="num">${money(cur.spent)}</td><td class="num">100%</td></tr></tfoot>
-    </table></div>
-  </section>`;
+function donutChart(parts, size) {
+  /* parts: [{label, value, color}] — returns an SVG donut + legend. */
+  const total = parts.reduce(function (s, p) { return s + p.value; }, 0) || 1;
+  const r = 62, cx = 80, cy = 80, circ = 2 * Math.PI * r;
+  let offset = 0;
+  const rings = parts.map(function (p) {
+    const frac = p.value / total;
+    const dash = frac * circ;
+    const el = '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' +
+      p.color + '" stroke-width="26" stroke-dasharray="' + dash.toFixed(1) + " " +
+      (circ - dash).toFixed(1) + '" stroke-dashoffset="' + (-offset).toFixed(1) + '"/>';
+    offset += dash;
+    return el;
+  }).join("");
+  const legend = parts.map(function (p) {
+    return '<div><i style="background:' + p.color + '"></i>' + esc(p.label) + " — " +
+      money(p.value) + " (" + pct(p.value, total) + ")</div>";
+  }).join("");
+  return '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">' +
+    '<svg width="' + size + '" height="' + size + '" viewBox="0 0 160 160" role="img" aria-label="Spending by category">' +
+    '<circle cx="80" cy="80" r="62" fill="none" stroke="#efe7d6" stroke-width="26"/>' + rings +
+    '<text x="80" y="76" text-anchor="middle" font-size="15" font-weight="700" fill="#2b2620">' + money(total) + '</text>' +
+    '<text x="80" y="94" text-anchor="middle" font-size="11" fill="#6b6257">spent in Nov</text></svg>' +
+    '<div class="legend" style="flex-direction:column;gap:4px">' + legend + "</div></div>";
 }
 
-// ---------- ROUTER & BOOT ----------
-// The router sits last on purpose: every view function and every piece of page state
-// above it is declared before render() is first called (see txFilter, editingId above).
-function route() {
-  const hash = location.hash.replace(/^#\/?/, '');
-  const [page] = hash.split('/');
-  document.querySelectorAll('.mainnav a').forEach(a => a.classList.toggle('active', a.dataset.route === page));
-  return page || '';
+function vbarChart(series, height) {
+  /* series: [{label, a, b}] grouped bars: a = income, b = spent. */
+  const max = Math.max.apply(null, series.map(function (s) { return Math.max(s.a, s.b); })) || 1;
+  const w = 420, h = height || 220, pad = 34, bw = 34, gap = 26;
+  const y = function (v) { return h - pad - (v / max) * (h - pad - 30); };
+  let bars = "";
+  series.forEach(function (s, i) {
+    const x = pad + i * (bw * 2 + gap) + 8;
+    bars += '<rect x="' + x + '" y="' + y(s.a) + '" width="' + bw + '" height="' + (h - pad - y(s.a)) +
+      '" rx="3" fill="#2f5d50"/>';
+    bars += '<rect x="' + (x + bw + 4) + '" y="' + y(s.b) + '" width="' + bw + '" height="' + (h - pad - y(s.b)) +
+      '" rx="3" fill="#c05621"/>';
+    bars += '<text x="' + (x + bw) + '" y="' + (h - 12) + '" text-anchor="middle" font-size="12" fill="#6b6257">' + esc(s.label) + "</text>";
+    bars += '<text x="' + (x + bw) + '" y="' + (y(s.a) - 5) + '" text-anchor="middle" font-size="11" fill="#2f5d50">' + money0(s.a) + "</text>";
+    bars += '<text x="' + (x + bw) + '" y="' + (y(s.b) - 5) + '" text-anchor="middle" font-size="11" fill="#c05621">' + money0(s.b) + "</text>";
+  });
+  return '<svg width="100%" viewBox="0 0 ' + w + " " + h + '" role="img" aria-label="Income versus spending">' + bars +
+    '<line x1="' + pad + '" y1="' + (h - pad) + '" x2="' + w + '" y2="' + (h - pad) + '" stroke="#e7dcc8"/></svg>' +
+    '<div class="legend"><span><i style="background:#2f5d50"></i>Income</span><span><i style="background:#c05621"></i>Spent</span></div>';
 }
+
+function hbarChart(parts) {
+  /* parts: [{label, value}] — horizontal bars, used for the trend view. */
+  const max = Math.max.apply(null, parts.map(function (p) { return p.value; })) || 1;
+  return parts.map(function (p, i) {
+    const w = Math.max(2, (p.value / max) * 100);
+    return '<div style="display:grid;grid-template-columns:110px 1fr 90px;gap:10px;align-items:center;margin:7px 0">' +
+      "<div>" + esc(p.label) + "</div>" +
+      '<div class="bar-track"><div class="bar-fill" style="width:' + w.toFixed(1) + "%;background:" + PALETTE[i % PALETTE.length] + '"></div></div>' +
+      '<div class="right num">' + money(p.value) + "</div></div>";
+  }).join("");
+}
+
+/* ---------- router ---------- */
+function currentRoute() {
+  const h = location.hash.replace(/^#\/?/, "");
+  return h.split("/")[0] || "";
+}
+
 function render() {
-  const page = route();
-  const map = { '': dashboardView, 'transactions': transactionsView, 'budget': budgetView, 'goals': goalsView, 'bills': billsView, 'reports': reportsView, 'household': householdView };
-  const fn = map[page] || dashboardView;
-  view.innerHTML = fn();
-  if (fn === transactionsView) bindTransactions();
-  if (fn === budgetView) bindBudget();
-  if (fn === goalsView) bindGoals();
-  if (fn === billsView) bindBills();
-  if (fn === reportsView) bindReports();
+  const route = currentRoute();
+  document.querySelectorAll("#nav a").forEach(function (a) {
+    a.classList.toggle("active", a.getAttribute("data-route") === route);
+  });
+  const view = document.getElementById("view");
+  if (route === "transactions") view.innerHTML = viewTransactions();
+  else if (route === "budget") view.innerHTML = viewBudget();
+  else if (route === "goals") view.innerHTML = viewGoals();
+  else if (route === "bills") view.innerHTML = viewBills();
+  else if (route === "reports") view.innerHTML = viewReports();
+  else if (route === "household") view.innerHTML = viewHousehold();
+  else view.innerHTML = viewDashboard();
   window.scrollTo(0, 0);
+  bindView(route);
 }
-window.addEventListener('hashchange', render);
-monthSelect.value = state.month;
-monthSelect.addEventListener('change', () => { state.month = monthSelect.value; saveState(); render(); });
-document.getElementById('resetDemo').addEventListener('click', () => { if (confirm('Reset all edits and restore the original Hartono demo data?')) resetDemo(); });
-document.getElementById('navToggle').addEventListener('click', e => {
-  const nav = document.getElementById('mainNav');
-  const open = nav.classList.toggle('open');
-  e.currentTarget.setAttribute('aria-expanded', String(open));
+
+window.addEventListener("hashchange", render);
+
+/* ---------- dashboard ---------- */
+function viewDashboard() {
+  const nov = computeMonth("2026-11");
+  const sep = computeMonth("2026-09");
+  const oct = computeMonth("2026-10");
+  const over = CATEGORIES.filter(function (c) { return nov.byCat[c] > (state.budgets[c] || 0); });
+  const topCat = CATEGORIES.slice().sort(function (a, b) { return nov.byCat[b] - nov.byCat[a]; })[0];
+  const unpaid = state.bills.filter(function (b) { return !b.paid; })
+    .sort(function (a, b) { return a.due - b.due; }).slice(0, 5);
+  const latest = state.transactions.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).slice(0, 8);
+  const donutParts = CATEGORIES.map(function (c, i) {
+    return { label: c, value: nov.byCat[c], color: PALETTE[i % PALETTE.length] };
+  }).filter(function (p) { return p.value > 0; })
+    .sort(function (a, b) { return b.value - a.value; }).slice(0, 8);
+  const insight = nov.rate >= 20
+    ? "November is on track: the family saved " + pct(nov.saved, nov.income) + " of income, above the 20% target. " +
+      "Biggest spend was " + topCat + " at " + money(nov.byCat[topCat]) + ". " +
+      (over.length ? over.length + " categor" + (over.length === 1 ? "y is" : "ies are") + " over budget: " + over.join(", ") + "." : "No category is over budget.")
+    : "November savings are below the 20% target — review " + topCat + " first, it took " + money(nov.byCat[topCat]) + " this month.";
+
+  return '' +
+    "<h2>November 2026 at a glance</h2>" +
+    '<p class="sub">Income, spending and saving for the Hartono household — computed live from the ledger.</p>' +
+    '<div class="grid stats">' +
+    '<div class="card stat good"><div class="label">Income</div><div class="value">' + money(nov.income) + '</div><div class="note">4 paydays &amp; inflows</div></div>' +
+    '<div class="card stat"><div class="label">Spent</div><div class="value">' + money(nov.spent) + '</div><div class="note">' + nov.rows.filter(function (t) { return t.type === "expense"; }).length + ' expense rows</div></div>' +
+    '<div class="card stat good"><div class="label">Saved</div><div class="value">' + money(nov.saved) + '</div><div class="note">Income minus spending</div></div>' +
+    '<div class="card stat ' + (nov.rate >= 20 ? "good" : "warn") + '"><div class="label">Savings rate</div><div class="value">' + nov.rate.toFixed(1) + '%</div><div class="note">Target: 20% of income</div></div>' +
+    "</div>" +
+    '<p class="insight">' + esc(insight) + "</p>" +
+    '<div class="grid two">' +
+    '<div class="card"><h3>Income vs spending</h3>' + vbarChart([
+      { label: "Sep", a: sep.income, b: sep.spent },
+      { label: "Oct", a: oct.income, b: oct.spent },
+      { label: "Nov", a: nov.income, b: nov.spent },
+    ]) + "</div>" +
+    '<div class="card"><h3>Where November money went</h3>' + donutChart(donutParts, 160) + "</div>" +
+    "</div>" +
+    '<div class="grid two">' +
+    '<div class="card"><h3>Spending trend <span class="hint">Sep &ndash; Nov</span></h3>' + hbarChart([
+      { label: "September", value: sep.spent },
+      { label: "October", value: oct.spent },
+      { label: "November", value: nov.spent },
+    ]) + '<p class="small muted">Spending is drifting up as the holidays approach — November is the highest of the three months.</p></div>' +
+    '<div class="card"><h3>Budget health <span class="hint">November</span></h3>' +
+    CATEGORIES.map(function (c) {
+      const spent = nov.byCat[c], bud = state.budgets[c] || 0;
+      const overBy = spent > bud;
+      return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+        "<span>" + esc(c) + '</span><span class="num">' + money(spent) + " / " + money(bud) + " " +
+        '<span class="badge ' + (overBy ? "over" : "under") + '">' + (overBy ? "over " + money(spent - bud) : "under " + money(bud - spent)) + "</span></span></div>";
+    }).join("") + "</div>" +
+    "</div>" +
+    '<div class="grid two">' +
+    '<div class="card"><h3>Next bills to pay</h3>' +
+    (unpaid.length ? unpaid.map(function (b) {
+      return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)">' +
+        "<span>" + esc(b.name) + ' <span class="muted small">due Nov ' + b.due + "</span></span>" +
+        '<span class="num">' + money(b.amount) + "</span></div>";
+    }).join("") : "<p>All bills are paid.</p>") +
+    '<p style="margin:12px 0 0"><a href="#/bills">See all 12 bills &rarr;</a></p></div>' +
+    '<div class="card"><h3>Latest transactions</h3>' +
+    latest.map(function (t) {
+      return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+        "<span>" + shortDate(t.date) + " &middot; " + esc(t.merchant) + '</span><span class="num ' + (t.type === "income" ? "pos" : "neg") + '">' +
+        (t.type === "income" ? "+" : "−") + money(t.amount) + "</span></div>";
+    }).join("") +
+    '<p style="margin:12px 0 0"><a href="#/transactions">Open the full ledger &rarr;</a></p></div>' +
+    "</div>";
+}
+
+/* ---------- transactions ---------- */
+function filteredTx() {
+  const q = txFilter.q.trim().toLowerCase();
+  return state.transactions.filter(function (t) {
+    if (txFilter.month !== "all" && t.date.slice(0, 7) !== txFilter.month) return false;
+    if (txFilter.category !== "all" && t.category !== txFilter.category) return false;
+    if (txFilter.type !== "all" && t.type !== txFilter.type) return false;
+    if (q && (t.merchant + " " + t.member + " " + t.category).toLowerCase().indexOf(q) === -1) return false;
+    return true;
+  }).sort(function (a, b) { return b.date.localeCompare(a.date) || a.merchant.localeCompare(b.merchant); });
+}
+
+function viewTransactions() {
+  const rows = filteredTx();
+  let running = 0;
+  let inc = 0, exp = 0;
+  rows.forEach(function (t) {
+    if (t.type === "income") inc += t.amount; else exp += t.amount;
+  });
+  /* running balance is computed oldest-first, then shown newest-first. */
+  const oldestFirst = rows.slice().sort(function (a, b) { return a.date.localeCompare(b.date); });
+  const balanceById = {};
+  oldestFirst.forEach(function (t) {
+    running += t.type === "income" ? t.amount : -t.amount;
+    balanceById[t.id] = running;
+  });
+  const catOpts = ['<option value="all">All categories</option>']
+    .concat(CATEGORIES.map(function (c) {
+      return '<option value="' + esc(c) + '"' + (txFilter.category === c ? " selected" : "") + ">" + esc(c) + "</option>";
+    })).join("");
+  const monthOpts = ['<option value="all">All months</option>'].concat(MONTHS.map(function (m) {
+    return '<option value="' + m + '"' + (txFilter.month === m ? " selected" : "") + ">" + MONTH_LABELS[m] + "</option>";
+  })).join("");
+
+  return '' +
+    "<h2>Transactions</h2>" +
+    '<p class="sub">The full household ledger — ' + state.transactions.length + ' rows, September to November 2026. Add, edit or delete any row; every total on the site updates.</p>' +
+    '<div class="card"><div class="filters">' +
+    '<div><label>Month</label><select id="f-month">' + monthOpts + "</select></div>" +
+    '<div><label>Category</label><select id="f-cat">' + catOpts + "</select></div>" +
+    '<div><label>Type</label><select id="f-type"><option value="all">All</option>' +
+    '<option value="income"' + (txFilter.type === "income" ? " selected" : "") + '>Income</option>' +
+    '<option value="expense"' + (txFilter.type === "expense" ? " selected" : "") + '>Expense</option></select></div>' +
+    '<div><label>Search</label><input type="text" id="f-q" placeholder="merchant, member…" value="' + esc(txFilter.q) + '"></div>' +
+    '<div><label>&nbsp;</label><button id="f-clear" class="ghost">Clear</button></div>' +
+    "</div>" +
+    '<form id="add-tx"><div class="form-row">' +
+    '<div><label>Date</label><input type="date" id="n-date" value="2026-11-30" required></div>' +
+    '<div><label>Merchant / description</label><input type="text" id="n-merchant" placeholder="e.g. Sunday market" required></div>' +
+    '<div><label>Category</label><select id="n-cat">' + CATEGORIES.map(function (c) { return "<option>" + esc(c) + "</option>"; }).join("") + "</select></div>" +
+    '<div><label>Type</label><select id="n-type"><option value="expense">Expense</option><option value="income">Income</option></select></div>' +
+    '<div><label>Amount ($)</label><input type="number" id="n-amount" min="0.01" step="0.01" placeholder="0.00" required></div>' +
+    '<div><label>Member</label><select id="n-member">' + MEMBERS.map(function (m) { return "<option>" + esc(m.name) + "</option>"; }).join("") + '<option>Shared</option></select></div>' +
+    '<div><label>&nbsp;</label><button type="submit">Add transaction</button></div>' +
+    "</div></form></div>" +
+    '<div class="card table-scroll"><table><thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Member</th><th class="right">Amount</th><th class="right">Balance</th><th></th></tr></thead><tbody>' +
+    rows.map(function (t) {
+      return '<tr><td class="num">' + esc(t.date) + "</td><td>" + esc(t.merchant) + "</td><td>" + esc(t.category) +
+        '</td><td>' + esc(t.member) + '</td><td class="right num ' + (t.type === "income" ? "pos" : "neg") + '">' +
+        (t.type === "income" ? "+" : "−") + money(t.amount) + '</td><td class="right num">' + money(balanceById[t.id]) + "</td>" +
+        '<td class="right"><button class="small ghost" data-edit="' + esc(t.id) + '">Edit</button> ' +
+        '<button class="small danger" data-del="' + esc(t.id) + '">Delete</button></td></tr>';
+    }).join("") +
+    "</tbody><tfoot><tr><td colspan=\"4\">" + rows.length + " rows shown</td>" +
+    '<td class="right">Income ' + money(inc) + "<br>Spent " + money(exp) + "</td>" +
+    '<td class="right">Net ' + money(inc - exp) + "</td><td></td></tr></tfoot></table></div>";
+}
+
+/* ---------- budget ---------- */
+function viewBudget() {
+  const nov = computeMonth("2026-11");
+  const totalBud = totalBudget();
+  const needs = nov.byCat.Housing + nov.byCat.Utilities + nov.byCat.Groceries + nov.byCat.Transport + nov.byCat.Health;
+  const wants = nov.byCat.Dining + nov.byCat.Entertainment + nov.byCat.Shopping + nov.byCat.Kids + nov.byCat.Subscriptions;
+  const future = nov.byCat.Education + nov.byCat.Misc;
+  const rule = function (label, spent, targetPct) {
+    const p = nov.income ? (spent / nov.income) * 100 : 0;
+    const ok = p <= targetPct;
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between"><span><strong>' + label +
+      '</strong> <span class="muted small">target ' + targetPct + '%</span></span><span class="num">' + money(spent) + " (" + p.toFixed(1) + "%) " +
+      '<span class="badge ' + (ok ? "under" : "over") + '">' + (ok ? "on track" : "over") + "</span></span></div>" +
+      '<div class="bar-track" style="margin-top:6px"><div class="bar-fill ' + (ok ? "" : "over") + '" style="width:' + Math.min(100, (p / targetPct) * 100).toFixed(1) + '%"></div></div></div>';
+  };
+  const verdict = (needs / nov.income) * 100 <= 50 && (wants / nov.income) * 100 <= 30
+    ? "November fits the 50/30/20 rule: needs and wants are both inside their bands, leaving " + pct(nov.saved, nov.income) + " for savings."
+    : "November breaks the 50/30/20 rule somewhere — check needs first, then wants.";
+
+  return '' +
+    "<h2>Budget — November 2026</h2>" +
+    '<p class="sub">12 category budgets against real November spending. Click any budget amount to change it; the bars and badges update at once.</p>' +
+    '<div class="grid two"><div class="card"><h3>Category budgets <span class="hint">total ' + money(totalBud) + " / month</span></h3>" +
+    CATEGORIES.map(function (c) {
+      const spent = nov.byCat[c], bud = state.budgets[c] || 0;
+      const use = bud ? Math.min(100, (spent / bud) * 100) : 0;
+      const overBy = spent > bud;
+      return '<div class="budget-row"><div class="budget-head"><span><strong>' + esc(c) + "</strong></span>" +
+        '<span class="num"><span class="amount" data-budget="' + esc(c) + '" title="Click to edit">' + money(bud) + "</span> budget &middot; " + money(spent) + " spent " +
+        '<span class="badge ' + (overBy ? "over" : "under") + '">' + (overBy ? "over " + money(spent - bud) : "under " + money(bud - spent)) + "</span></span></div>" +
+        '<div class="bar-track" style="margin-top:7px"><div class="bar-fill ' + (overBy ? "over" : (use > 85 ? "amber" : "")) + '" style="width:' + use.toFixed(1) + '%"></div></div>' +
+        '<div class="goal-bar"><span>' + use.toFixed(0) + "% used</span><span>" + (bud ? pct(spent, bud) : "—") + " of budget</span></div></div>";
+    }).join("") + "</div>" +
+    '<div><div class="card"><h3>The 50/30/20 rule <span class="hint">computed from real income</span></h3>' +
+    rule("Needs — housing, utilities, groceries, transport, health", needs, 50) +
+    rule("Wants — dining, fun, shopping, kids, subscriptions", wants, 30) +
+    rule("Future — education &amp; everything else", future, 20) +
+    '<p style="margin:12px 0 0">' + esc(verdict) + "</p></div>" +
+    '<div class="card"><h3>How November compares</h3>' +
+    "<p>Total budgeted: <strong>" + money(totalBud) + "</strong>. Total actually spent: <strong>" + money(nov.spent) + "</strong>. " +
+    "That leaves <strong>" + money(totalBud - nov.spent) + "</strong> of budget headroom — money the family did not need this month.</p>" +
+    "<p>Two categories ran over: <strong>Housing</strong> (insurance landed in the same month as rent) and <strong>Misc</strong> (a plumber call-out). " +
+    "Everything else came in under its budget.</p>" +
+    '<p class="small muted">Tip: click a budget amount on the left to raise or lower it — for example, give Housing a little more room next month and trim Shopping to match.</p></div>' +
+    "</div></div>";
+}
+
+/* ---------- goals ---------- */
+function viewGoals() {
+  const totalSaved = state.goals.reduce(function (s, g) { return s + g.saved; }, 0);
+  const totalTarget = state.goals.reduce(function (s, g) { return s + g.target; }, 0);
+  return '' +
+    "<h2>Savings goals</h2>" +
+    '<p class="sub">' + state.goals.length + " goals, " + money(totalSaved) + " saved of " + money(totalTarget) + " (" + pct(totalSaved, totalTarget) + "). " +
+    "Contribute to any goal — finish months are computed from your monthly amount.</p>" +
+    '<div class="grid two">' +
+    state.goals.map(function (g) {
+      const use = Math.min(100, (g.saved / g.target) * 100);
+      const left = Math.max(0, g.target - g.saved);
+      return '<div class="card"><h3>' + esc(g.name) + ' <span class="hint">' + pct(g.saved, g.target) + "</span></h3>" +
+        '<p class="small muted" style="margin:0 0 10px">' + esc(g.note) + "</p>" +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + use.toFixed(1) + '%"></div></div>' +
+        '<div class="goal-bar"><span>' + money(g.saved) + " of " + money(g.target) + "</span>" +
+        '<span data-togo="' + esc(g.id) + '">' + money(left) + " to go</span></div>" +
+        '<div class="goal-bar"><span>Monthly: ' + money(g.monthly) + "</span><span>Finish in: <strong>" + finishIn(g) + "</strong></span></div>" +
+        '<div class="goal-actions"><button class="small" data-give="' + esc(g.id) + '" data-amt="50">+$50</button>' +
+        '<button class="small" data-give="' + esc(g.id) + '" data-amt="100">+$100</button>' +
+        '<input type="number" min="1" step="1" placeholder="Custom $" data-custom="' + esc(g.id) + '">' +
+        '<button class="small ghost" data-give-custom="' + esc(g.id) + '">Add</button></div></div>';
+    }).join("") +
+    "</div>" +
+    '<div class="card"><h3>Add a new goal</h3>' +
+    '<form id="add-goal"><div class="form-row">' +
+    '<div><label>Goal name</label><input type="text" id="g-name" placeholder="e.g. New laptop" required></div>' +
+    '<div><label>Target ($)</label><input type="number" id="g-target" min="1" step="1" required></div>' +
+    '<div><label>Already saved ($)</label><input type="number" id="g-saved" min="0" step="1" value="0"></div>' +
+    '<div><label>Monthly ($)</label><input type="number" id="g-monthly" min="0" step="1" value="100"></div>' +
+    '<div><label>&nbsp;</label><button type="submit">Add goal</button></div>' +
+    "</div></form></div>";
+}
+
+/* ---------- bills ---------- */
+function viewBills() {
+  const paid = state.bills.filter(function (b) { return b.paid; });
+  const unpaid = state.bills.filter(function (b) { return !b.paid; });
+  const paidTotal = paid.reduce(function (s, b) { return s + b.amount; }, 0);
+  const dueTotal = state.bills.reduce(function (s, b) { return s + b.amount; }, 0);
+  const byDue = {};
+  state.bills.forEach(function (b) { byDue[b.due] = b; });
+  const firstDow = new Date(2026, 10, 1).getDay(); /* Nov 2026 starts on a Sunday */
+  let cells = "";
+  for (let i = 0; i < firstDow; i++) cells += '<div class="day empty"></div>';
+  for (let d = 1; d <= 30; d++) {
+    const b = byDue[d];
+    cells += '<div class="day' + (d === 27 ? " today" : "") + '"><span class="n">' + d + "</span>" +
+      (b ? '<span class="mark' + (b.paid ? " paid-mark" : "") + '">' + (b.paid ? "✓ " : "• ") + esc(b.name) + "</span>" : "") + "</div>";
+  }
+  return '' +
+    "<h2>Bills — November 2026</h2>" +
+    '<p class="sub">12 bills, ' + paid.length + ' paid. Toggle any bill to Paid and the summary below updates.</p>' +
+    '<div class="grid stats">' +
+    '<div class="card stat"><div class="label">Bills this month</div><div class="value">' + state.bills.length + '</div><div class="note">due in November</div></div>' +
+    '<div class="card stat good"><div class="label">Paid</div><div class="value" data-paid-count>' + paid.length + '</div><div class="note">bills settled</div></div>' +
+    '<div class="card stat"><div class="label">Paid total</div><div class="value" data-paid-total>' + money(paidTotal) + '</div><div class="note">of ' + money(dueTotal) + " due</div></div>" +
+    '<div class="card stat"><div class="label">Still to pay</div><div class="value">' + money(dueTotal - paidTotal) + '</div><div class="note">' + unpaid.length + " bills left</div></div>" +
+    "</div>" +
+    '<div class="grid two"><div class="card"><h3>November calendar</h3>' +
+    '<div class="cal"><div class="dow">Sun</div><div class="dow">Mon</div><div class="dow">Tue</div><div class="dow">Wed</div><div class="dow">Thu</div><div class="dow">Fri</div><div class="dow">Sat</div>' + cells + "</div>" +
+    '<p class="small muted">Today is marked — 27 November. Green marks are paid, orange marks are still due.</p></div>' +
+    '<div class="card"><h3>All bills</h3>' +
+    state.bills.slice().sort(function (a, b) { return a.due - b.due; }).map(function (b) {
+      return '<div class="bill-row"><div><strong>' + esc(b.name) + "</strong>" +
+        '<div class="small muted">Due Nov ' + b.due + (b.autopay ? ' &middot; <span class="badge auto">Autopay</span>' : "") + "</div></div>" +
+        '<div style="display:flex;gap:10px;align-items:center"><span class="num">' + money(b.amount) + "</span>" +
+        '<button class="small ' + (b.paid ? "ghost" : "") + '" data-bill="' + esc(b.id) + '">' + (b.paid ? "Paid ✓" : "Mark paid") + "</button></div></div>";
+    }).join("") + "</div></div>";
+}
+
+/* ---------- reports ---------- */
+function viewReports() {
+  const sep = computeMonth("2026-09");
+  const oct = computeMonth("2026-10");
+  const nov = computeMonth("2026-11");
+  const top5 = topMerchants("2026-11", 5);
+  const worstCat = CATEGORIES.slice().sort(function (a, b) { return (nov.byCat[b] - (state.budgets[b] || 0)) - (nov.byCat[a] - (state.budgets[a] || 0)); })[0];
+  const bestCat = CATEGORIES.slice().sort(function (a, b) { return ((state.budgets[a] || 0) - nov.byCat[a]) - ((state.budgets[b] || 0) - nov.byCat[b]); })[0];
+  const trend = nov.spent > oct.spent
+    ? "Spending rose " + money(nov.spent - oct.spent) + " from October to November (" + pct(nov.spent - oct.spent, oct.spent) + "), mostly in " + worstCat + "."
+    : "Spending fell " + money(oct.spent - nov.spent) + " from October to November — good control.";
+  const insights = [
+    "Savings rate: " + nov.rate.toFixed(1) + "% in November — " + (nov.rate >= 20 ? "above the 20% target." : "below the 20% target."),
+    trend,
+    "Biggest single category in November: " + topCatName(nov) + " at " + money(Math.max.apply(null, CATEGORIES.map(function (c) { return nov.byCat[c]; }))) + ".",
+    "Best-controlled category: " + bestCat + " came in " + money((state.budgets[bestCat] || 0) - nov.byCat[bestCat]) + " under budget.",
+  ];
+  const row3 = function (label, a, b, c) {
+    return "<tr><td>" + label + "</td><td class=\"right num\">" + money(a) + "</td><td class=\"right num\">" + money(b) + "</td><td class=\"right num\">" + money(c) + "</td></tr>";
+  };
+  return '' +
+    "<h2>Reports</h2>" +
+    '<p class="sub">September vs October vs November, top merchants, and what the numbers say. Export the ledger or print this page.</p>' +
+    '<div class="card no-print" style="display:flex;gap:10px;flex-wrap:wrap"><button id="export-csv">Export CSV</button><button id="print-page" class="ghost">Print report</button></div>' +
+    '<div class="grid two"><div class="card"><h3>Three-month comparison</h3><div class="table-scroll"><table>' +
+    "<thead><tr><th></th><th class=\"right\">September</th><th class=\"right\">October</th><th class=\"right\">November</th></tr></thead><tbody>" +
+    row3("Income", sep.income, oct.income, nov.income) +
+    row3("Spent", sep.spent, oct.spent, nov.spent) +
+    row3("Saved", sep.saved, oct.saved, nov.saved) +
+    "</tbody></table></div></div>" +
+    '<div class="card"><h3>Income vs spending</h3>' + vbarChart([
+      { label: "Sep", a: sep.income, b: sep.spent },
+      { label: "Oct", a: oct.income, b: oct.spent },
+      { label: "Nov", a: nov.income, b: nov.spent },
+    ]) + "</div></div>" +
+    '<div class="grid two"><div class="card"><h3>Top 5 merchants — November</h3>' +
+    top5.map(function (m, i) {
+      return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)"><span>' + (i + 1) + ". " + esc(m.name) + '</span><span class="num">' + money(m.total) + "</span></div>";
+    }).join("") + "</div>" +
+    '<div class="card"><h3>Category trend — spending by month</h3>' +
+    CATEGORIES.slice(0, 6).map(function (c) {
+      return "<p style=\"margin:6px 0\"><strong>" + esc(c) + ":</strong> " + money(sep.byCat[c]) + " &rarr; " + money(oct.byCat[c]) + " &rarr; <strong>" + money(nov.byCat[c]) + "</strong></p>";
+    }).join("") + '<p class="small muted">Top 6 categories shown; the full split is on the Budget page.</p></div></div>' +
+    '<div class="card"><h3>Auto insights</h3><ul style="margin:0;padding-left:20px">' +
+    insights.map(function (s) { return "<li style=\"margin:6px 0\">" + esc(s) + "</li>"; }).join("") + "</ul></div>";
+}
+
+function topCatName(m) {
+  return CATEGORIES.slice().sort(function (a, b) { return m.byCat[b] - m.byCat[a]; })[0];
+}
+
+/* ---------- household ---------- */
+function viewHousehold() {
+  const nov = computeMonth("2026-11");
+  const ms = memberSpend("2026-11");
+  const totalPersonal = MEMBERS.reduce(function (s, m) { return s + ms.per[m.name]; }, 0);
+  const sharedPct = nov.spent ? (ms.shared / nov.spent) * 100 : 0;
+  return '' +
+    "<h2>Household</h2>" +
+    '<p class="sub">Four people, one budget. Personal spending is tracked per member; rent, utilities and groceries count as shared.</p>' +
+    '<div class="grid two"><div class="card"><h3>Members &amp; personal budgets</h3>' +
+    MEMBERS.map(function (m) {
+      const spent = ms.per[m.name];
+      const overBy = spent > m.personalBudget;
+      return '<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div style="display:flex;justify-content:space-between">' +
+        '<span><span class="member-dot" style="background:' + m.color + '"></span><strong>' + esc(m.name) + "</strong> <span class=\"muted small\">" + esc(m.role) + ", " + m.age + "</span></span>" +
+        '<span class="num">' + money(spent) + " / " + money(m.personalBudget) + ' <span class="badge ' + (overBy ? "over" : "under") + '">' + (overBy ? "over" : "within") + "</span></span></div>" +
+        '<div class="bar-track" style="margin-top:6px"><div class="bar-fill ' + (overBy ? "over" : "") + '" style="width:' + Math.min(100, (spent / m.personalBudget) * 100).toFixed(1) + "%;background:" + m.color + '"></div></div></div>';
+    }).join("") + "</div>" +
+    '<div><div class="card"><h3>Shared vs personal <span class="hint">November spending</span></h3>' +
+    '<div class="split-bar"><div style="width:' + sharedPct.toFixed(1) + '%;background:#2f5d50"></div><div style="width:' + (100 - sharedPct).toFixed(1) + '%;background:#c05621"></div></div>' +
+    '<div class="legend"><span><i style="background:#2f5d50"></i>Shared ' + money(ms.shared) + " (" + sharedPct.toFixed(1) + '%)</span>' +
+    '<span><i style="background:#c05621"></i>Personal ' + money(totalPersonal) + " (" + (100 - sharedPct).toFixed(1) + "%)</span></div>" +
+    "<p>Shared covers the roof over everyone: rent, insurance, utilities and the weekly shop. " +
+    "Personal spending is everything tied to one person — petrol, lunches, clothes, school and fun.</p></div>" +
+    '<div class="card"><h3>Per-member spending — November</h3><div class="table-scroll"><table>' +
+    "<thead><tr><th>Member</th><th class=\"right\">Spent</th><th class=\"right\">Share of month</th><th class=\"right\">Personal budget</th></tr></thead><tbody>" +
+    MEMBERS.map(function (m) {
+      return "<tr><td>" + esc(m.name) + "</td><td class=\"right num\">" + money(ms.per[m.name]) + "</td><td class=\"right num\">" + pct(ms.per[m.name], nov.spent) + "</td><td class=\"right num\">" + money(m.personalBudget) + "</td></tr>";
+    }).join("") +
+    "<tr><td><strong>Shared</strong></td><td class=\"right num\"><strong>" + money(ms.shared) + "</strong></td><td class=\"right num\"><strong>" + pct(ms.shared, nov.spent) + "</strong></td><td class=\"right num\">—</td></tr>" +
+    "</tbody></table></div></div></div></div>";
+}
+
+/* ---------- event wiring ---------- */
+function bindView(route) {
+  if (route === "transactions") bindTransactions();
+  else if (route === "budget") bindBudget();
+  else if (route === "goals") bindGoals();
+  else if (route === "bills") bindBills();
+  else if (route === "reports") bindReports();
+}
+
+function rerender() { render(); }
+
+function bindTransactions() {
+  const set = function (id, ev, fn) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(ev, fn);
+  };
+  set("f-month", "change", function (e) { txFilter.month = e.target.value; rerender(); });
+  set("f-cat", "change", function (e) { txFilter.category = e.target.value; rerender(); });
+  set("f-type", "change", function (e) { txFilter.type = e.target.value; rerender(); });
+  set("f-q", "input", function (e) { txFilter.q = e.target.value; rerender(); });
+  set("f-clear", "click", function () {
+    txFilter = { month: "2026-11", category: "all", type: "all", q: "" };
+    rerender();
+  });
+  set("add-tx", "submit", function (e) {
+    e.preventDefault();
+    const amount = parseFloat(document.getElementById("n-amount").value);
+    const date = document.getElementById("n-date").value;
+    if (!amount || amount <= 0 || !date) return;
+    state.transactions.push({
+      id: "tx-user-" + Date.now(),
+      date: date,
+      merchant: document.getElementById("n-merchant").value.trim() || "Untitled",
+      category: document.getElementById("n-cat").value,
+      type: document.getElementById("n-type").value,
+      amount: round2(amount),
+      member: document.getElementById("n-member").value,
+    });
+    saveState();
+    rerender();
+  });
+  document.querySelectorAll("[data-del]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      state.transactions = state.transactions.filter(function (t) { return t.id !== btn.getAttribute("data-del"); });
+      saveState();
+      rerender();
+    });
+  });
+  document.querySelectorAll("[data-edit]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const t = state.transactions.find(function (x) { return x.id === btn.getAttribute("data-edit"); });
+      if (!t) return;
+      const amount = window.prompt("New amount for “" + t.merchant + "” ($):", t.amount.toFixed(2));
+      if (amount === null) return;
+      const v = parseFloat(amount);
+      if (!isNaN(v) && v > 0) { t.amount = round2(v); saveState(); rerender(); }
+    });
+  });
+}
+
+function bindBudget() {
+  document.querySelectorAll("[data-budget]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      const cat = el.getAttribute("data-budget");
+      const v = window.prompt("Monthly budget for " + cat + " ($):", (state.budgets[cat] || 0).toFixed(2));
+      if (v === null) return;
+      const n = parseFloat(v);
+      if (!isNaN(n) && n >= 0) { state.budgets[cat] = round2(n); saveState(); rerender(); }
+    });
+  });
+}
+
+function bindGoals() {
+  document.querySelectorAll("[data-give]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const g = state.goals.find(function (x) { return x.id === btn.getAttribute("data-give"); });
+      if (!g) return;
+      g.saved = round2(Math.min(g.target, g.saved + parseFloat(btn.getAttribute("data-amt"))));
+      saveState();
+      rerender();
+    });
+  });
+  document.querySelectorAll("[data-give-custom]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const id = btn.getAttribute("data-give-custom");
+      const input = document.querySelector('[data-custom="' + id + '"]');
+      const g = state.goals.find(function (x) { return x.id === id; });
+      const v = input ? parseFloat(input.value) : NaN;
+      if (!g || isNaN(v) || v <= 0) return;
+      g.saved = round2(Math.min(g.target, g.saved + v));
+      saveState();
+      rerender();
+    });
+  });
+  const form = document.getElementById("add-goal");
+  if (form) form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    const name = document.getElementById("g-name").value.trim();
+    const target = parseFloat(document.getElementById("g-target").value);
+    if (!name || isNaN(target) || target <= 0) return;
+    state.goals.push({
+      id: "g-user-" + Date.now(),
+      name: name,
+      target: round2(target),
+      saved: round2(parseFloat(document.getElementById("g-saved").value) || 0),
+      monthly: round2(parseFloat(document.getElementById("g-monthly").value) || 0),
+      note: "Added by the family.",
+    });
+    saveState();
+    rerender();
+  });
+}
+
+function bindBills() {
+  document.querySelectorAll("[data-bill]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      const b = state.bills.find(function (x) { return x.id === btn.getAttribute("data-bill"); });
+      if (!b) return;
+      b.paid = !b.paid;
+      saveState();
+      rerender();
+    });
+  });
+}
+
+function bindReports() {
+  const csvBtn = document.getElementById("export-csv");
+  if (csvBtn) csvBtn.addEventListener("click", function () {
+    const lines = ['"date","merchant","category","member","type","amount"'];
+    state.transactions.slice().sort(function (a, b) { return a.date.localeCompare(b.date); }).forEach(function (t) {
+      lines.push('"' + t.date + '","' + t.merchant.replace(/"/g, '""') + '","' + t.category + '","' + t.member + '","' + t.type + '",' + t.amount.toFixed(2));
+    });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "hearthledger-transactions.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+  const printBtn = document.getElementById("print-page");
+  if (printBtn) printBtn.addEventListener("click", function () { window.print(); });
+}
+
+/* ---------- footer reset + boot ---------- */
+document.getElementById("reset-demo").addEventListener("click", function () {
+  if (!window.confirm("Reset all demo data back to the original seed? Your edits will be lost.")) return;
+  localStorage.removeItem(STORE_KEY);
+  const fresh = defaultState();
+  state.transactions = fresh.transactions;
+  state.budgets = fresh.budgets;
+  state.goals = fresh.goals;
+  state.bills = fresh.bills;
+  txFilter = { month: "2026-11", category: "all", type: "all", q: "" };
+  render();
 });
-document.querySelectorAll('.mainnav a').forEach(a => a.addEventListener('click', () => document.getElementById('mainNav').classList.remove('open')));
 
 render();
+
+/* ---------- search-box focus guard ----------
+   The transactions search re-renders the table on every keystroke, which
+   would destroy the input under the user's fingers. This capture-phase
+   listener on the persistent #view wrapper intercepts typing first,
+   re-renders, then hands focus and the caret back to the fresh input. */
+document.getElementById("view").addEventListener("input", function (e) {
+  if (e.target && e.target.id === "f-q") {
+    e.stopPropagation();
+    txFilter.q = e.target.value;
+    render();
+    const el = document.getElementById("f-q");
+    if (el) {
+      el.focus();
+      try { el.setSelectionRange(el.value.length, el.value.length); } catch (err) { /* ignore */ }
+    }
+  }
+}, true);
+
+/* ---------- visual fixes, appended after first visual review ----------
+   1. The dashboard donut showed only the top 8 categories, so its centre
+      total ($4,492.79) disagreed with the $4,912.00 stat. The donut below
+      uses all 12 categories, so centre and stat always agree.
+   2. In the grouped bar chart the "spent" value label sat over the taller
+      income bar. Each value label is now centred over its own bar. */
+
+function vbarChart(series, height) {
+  const max = Math.max.apply(null, series.map(function (s) { return Math.max(s.a, s.b); })) || 1;
+  const w = 420, h = height || 220, pad = 34, bw = 34, gap = 26;
+  const y = function (v) { return h - pad - (v / max) * (h - pad - 30); };
+  let bars = "";
+  series.forEach(function (s, i) {
+    const x = pad + i * (bw * 2 + gap) + 8;
+    bars += '<rect x="' + x + '" y="' + y(s.a) + '" width="' + bw + '" height="' + (h - pad - y(s.a)) +
+      '" rx="3" fill="#2f5d50"/>';
+    bars += '<rect x="' + (x + bw + 4) + '" y="' + y(s.b) + '" width="' + bw + '" height="' + (h - pad - y(s.b)) +
+      '" rx="3" fill="#c05621"/>';
+    bars += '<text x="' + (x + bw) + '" y="' + (h - 12) + '" text-anchor="middle" font-size="12" fill="#6b6257">' + esc(s.label) + "</text>";
+    bars += '<text x="' + (x + bw / 2) + '" y="' + (y(s.a) - 5) + '" text-anchor="middle" font-size="11" fill="#2f5d50">' + money0(s.a) + "</text>";
+    bars += '<text x="' + (x + bw + 4 + bw / 2) + '" y="' + (y(s.b) - 5) + '" text-anchor="middle" font-size="11" fill="#c05621">' + money0(s.b) + "</text>";
+  });
+  return '<svg width="100%" viewBox="0 0 ' + w + " " + h + '" role="img" aria-label="Income versus spending">' + bars +
+    '<line x1="' + pad + '" y1="' + (h - pad) + '" x2="' + w + '" y2="' + (h - pad) + '" stroke="#e7dcc8"/></svg>' +
+    '<div class="legend"><span><i style="background:#2f5d50"></i>Income</span><span><i style="background:#c05621"></i>Spent</span></div>';
+}
+
+function viewDashboard() {
+  const nov = computeMonth("2026-11");
+  const sep = computeMonth("2026-09");
+  const oct = computeMonth("2026-10");
+  const over = CATEGORIES.filter(function (c) { return nov.byCat[c] > (state.budgets[c] || 0); });
+  const topCat = CATEGORIES.slice().sort(function (a, b) { return nov.byCat[b] - nov.byCat[a]; })[0];
+  const unpaid = state.bills.filter(function (b) { return !b.paid; })
+    .sort(function (a, b) { return a.due - b.due; }).slice(0, 5);
+  const latest = state.transactions.slice().sort(function (a, b) { return b.date.localeCompare(a.date); }).slice(0, 8);
+  /* All 12 categories, so the donut centre equals the spent stat. */
+  const donutParts = CATEGORIES.map(function (c, i) {
+    return { label: c, value: nov.byCat[c], color: PALETTE[i % PALETTE.length] };
+  }).filter(function (p) { return p.value > 0; })
+    .sort(function (a, b) { return b.value - a.value; });
+  const insight = nov.rate >= 20
+    ? "November is on track: the family saved " + pct(nov.saved, nov.income) + " of income, above the 20% target. " +
+      "Biggest spend was " + topCat + " at " + money(nov.byCat[topCat]) + ". " +
+      (over.length ? over.length + " categor" + (over.length === 1 ? "y is" : "ies are") + " over budget: " + over.join(", ") + "." : "No category is over budget.")
+    : "November savings are below the 20% target — review " + topCat + " first, it took " + money(nov.byCat[topCat]) + " this month.";
+
+  return '' +
+    "<h2>November 2026 at a glance</h2>" +
+    '<p class="sub">Income, spending and saving for the Hartono household — computed live from the ledger.</p>' +
+    '<div class="grid stats">' +
+    '<div class="card stat good"><div class="label">Income</div><div class="value">' + money(nov.income) + '</div><div class="note">4 paydays &amp; inflows</div></div>' +
+    '<div class="card stat"><div class="label">Spent</div><div class="value">' + money(nov.spent) + '</div><div class="note">' + nov.rows.filter(function (t) { return t.type === "expense"; }).length + ' expense rows</div></div>' +
+    '<div class="card stat good"><div class="label">Saved</div><div class="value">' + money(nov.saved) + '</div><div class="note">Income minus spending</div></div>' +
+    '<div class="card stat ' + (nov.rate >= 20 ? "good" : "warn") + '"><div class="label">Savings rate</div><div class="value">' + nov.rate.toFixed(1) + '%</div><div class="note">Target: 20% of income</div></div>' +
+    "</div>" +
+    '<p class="insight">' + esc(insight) + "</p>" +
+    '<div class="grid two">' +
+    '<div class="card"><h3>Income vs spending</h3>' + vbarChart([
+      { label: "Sep", a: sep.income, b: sep.spent },
+      { label: "Oct", a: oct.income, b: oct.spent },
+      { label: "Nov", a: nov.income, b: nov.spent },
+    ]) + "</div>" +
+    '<div class="card"><h3>Where November money went</h3>' + donutChart(donutParts, 160) + "</div>" +
+    "</div>" +
+    '<div class="grid two">' +
+    '<div class="card"><h3>Spending trend <span class="hint">Sep &ndash; Nov</span></h3>' + hbarChart([
+      { label: "September", value: sep.spent },
+      { label: "October", value: oct.spent },
+      { label: "November", value: nov.spent },
+    ]) + '<p class="small muted">Spending is drifting up as the holidays approach — November is the highest of the three months.</p></div>' +
+    '<div class="card"><h3>Budget health <span class="hint">November</span></h3>' +
+    CATEGORIES.map(function (c) {
+      const spent = nov.byCat[c], bud = state.budgets[c] || 0;
+      const overBy = spent > bud;
+      return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+        "<span>" + esc(c) + '</span><span class="num">' + money(spent) + " / " + money(bud) + " " +
+        '<span class="badge ' + (overBy ? "over" : "under") + '">' + (overBy ? "over " + money(spent - bud) : "under " + money(bud - spent)) + "</span></span></div>";
+    }).join("") + "</div>" +
+    "</div>" +
+    '<div class="grid two">' +
+    '<div class="card"><h3>Next bills to pay</h3>' +
+    (unpaid.length ? unpaid.map(function (b) {
+      return '<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line)">' +
+        "<span>" + esc(b.name) + ' <span class="muted small">due Nov ' + b.due + "</span></span>" +
+        '<span class="num">' + money(b.amount) + "</span></div>";
+    }).join("") : "<p>All bills are paid.</p>") +
+    '<p style="margin:12px 0 0"><a href="#/bills">See all 12 bills &rarr;</a></p></div>' +
+    '<div class="card"><h3>Latest transactions</h3>' +
+    latest.map(function (t) {
+      return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">' +
+        "<span>" + shortDate(t.date) + " &middot; " + esc(t.merchant) + '</span><span class="num ' + (t.type === "income" ? "pos" : "neg") + '">' +
+        (t.type === "income" ? "+" : "−") + money(t.amount) + "</span></div>";
+    }).join("") +
+    '<p style="margin:12px 0 0"><a href="#/transactions">Open the full ledger &rarr;</a></p></div>' +
+    "</div>";
+}
